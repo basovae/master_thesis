@@ -1,4 +1,4 @@
-"""
+"""""
 PGA-MAP-Elites for Portfolio Optimization
 Adapted from official implementation: https://github.com/ollenilsson19/PGA-MAP-Elites
 
@@ -11,12 +11,15 @@ CHANGES FROM ORIGINAL:
 6. Added behavior descriptor normalization to [0,1] for CVT
 7. Removed vectorized_env dependency - sequential evaluation
 8. Added comments marking all changes with [CHANGED] or [REMOVED] or [ADDED]
-"""
+
+[LOGGING ADDED] - Search for this tag to find all logging additions
+"""""
 
 import numpy as np
 import torch
 from sklearn.neighbors import KDTree
 import os
+import time  # [LOGGING ADDED] For timing
 
 # Official utils.py (copy-pasted from original repo)
 from official_logic import (
@@ -75,13 +78,97 @@ config = {
     # Paths
     "save_path": "./results",
     "seed": 0,
+    
+    # [LOGGING ADDED] Logging options
+    "verbose": True,          # Enable detailed logging
+    "log_interval": 1,        # Log every N iterations
 }
+
+
+# =============================================================================
+# [LOGGING ADDED] Logging helper functions
+# =============================================================================
+def log_archive_metrics(archive, n_niches, bd_names=["volatility", "diversification"]):
+    """Log detailed archive quality metrics."""
+    if len(archive) == 0:
+        print("  Archive: Empty")
+        return {}
+    
+    fit_list = np.array([x.fitness for x in archive.values()])
+    bd_list = np.array([x.desc for x in archive.values()])
+    
+    metrics = {
+        'coverage': len(archive),
+        'coverage_pct': 100 * len(archive) / n_niches,
+        'max_fitness': fit_list.max(),
+        'mean_fitness': np.mean(fit_list),
+        'median_fitness': np.median(fit_list),
+        'min_fitness': fit_list.min(),
+        'std_fitness': np.std(fit_list),
+        'qd_score': np.sum(fit_list),  # Sum of all fitnesses
+    }
+    
+    # BD statistics
+    for i, name in enumerate(bd_names):
+        if bd_list.shape[1] > i:
+            metrics[f'bd_{name}_mean'] = np.mean(bd_list[:, i])
+            metrics[f'bd_{name}_std'] = np.std(bd_list[:, i])
+            metrics[f'bd_{name}_min'] = np.min(bd_list[:, i])
+            metrics[f'bd_{name}_max'] = np.max(bd_list[:, i])
+    
+    print(f"  Archive Metrics:")
+    print(f"    Coverage: {metrics['coverage']}/{n_niches} ({metrics['coverage_pct']:.1f}%)")
+    print(f"    Fitness: max={metrics['max_fitness']:.4f}, mean={metrics['mean_fitness']:.4f}, "
+          f"median={metrics['median_fitness']:.4f}, std={metrics['std_fitness']:.4f}")
+    print(f"    QD-Score: {metrics['qd_score']:.4f}")
+    
+    # BD distribution
+    print(f"    BD Distribution:")
+    for i, name in enumerate(bd_names):
+        if bd_list.shape[1] > i:
+            print(f"      {name}: mean={metrics[f'bd_{name}_mean']:.3f}, "
+                  f"std={metrics[f'bd_{name}_std']:.3f}, "
+                  f"range=[{metrics[f'bd_{name}_min']:.3f}, {metrics[f'bd_{name}_max']:.3f}]")
+    
+    return metrics
+
+
+def log_replay_buffer(replay_buffer):
+    """Log replay buffer status."""
+    fill_pct = 100 * replay_buffer.size / replay_buffer.max_size
+    print(f"  Replay Buffer: {replay_buffer.size:,}/{replay_buffer.max_size:,} ({fill_pct:.1f}%)")
+
+
+def log_variation_stats(pg_added, pg_total, ga_added, ga_total):
+    """Log variation operator success rates."""
+    pg_rate = 100 * pg_added / pg_total if pg_total > 0 else 0
+    ga_rate = 100 * ga_added / ga_total if ga_total > 0 else 0
+    total_added = pg_added + ga_added
+    total = pg_total + ga_total
+    total_rate = 100 * total_added / total if total > 0 else 0
+    
+    print(f"  Variation Success:")
+    print(f"    PG: {pg_added}/{pg_total} ({pg_rate:.1f}%)")
+    print(f"    GA: {ga_added}/{ga_total} ({ga_rate:.1f}%)")
+    print(f"    Total: {total_added}/{total} ({total_rate:.1f}%)")
+    
+    return {'pg_added': pg_added, 'pg_total': pg_total, 'pg_rate': pg_rate,
+            'ga_added': ga_added, 'ga_total': ga_total, 'ga_rate': ga_rate}
 
 
 # =============================================================================
 # [ADDED] Simple evaluation function (replaces ParallelEnv)
 # =============================================================================
 def evaluate_policy(actor, env, max_steps=1000):
+    """
+    Evaluate a policy and collect transitions.
+    
+    Returns:
+        fitness: Cumulative episode reward
+        behavior_descriptor: BD in [0,1] range
+        transitions: Tuple of arrays for replay buffer
+        alive: Whether agent survived full episode
+    """
     states, actions, next_states, rewards, dones = [], [], [], [], []
     
     state = env.reset()
@@ -198,14 +285,24 @@ def pg_variation(parent, critic, replay_buffer, config):
     # Optimizer for PG updates
     optimizer = torch.optim.Adam(offspring.parameters(), lr=config["lr"])
     
+    # [LOGGING ADDED] Track PG variation metrics
+    initial_q = None
+    final_q = None
+    
     # Apply n_grad gradient steps
-    for _ in range(config["nr_of_steps_act"]):
+    for step in range(config["nr_of_steps_act"]):
         # Sample states from replay buffer
         states, _, _, _, _ = replay_buffer.sample(config["train_batch_size"])
         
         # Compute policy gradient: maximize Q(s, π(s))
         actions = offspring(states)
-        q_values = critic.Q1(states, actions)  # Use Q1 only for actor update
+        q_values = critic.critic.Q1(states, actions)  # Use Q1 only for actor update
+        
+        # [LOGGING ADDED] Track Q-value improvement
+        if step == 0:
+            initial_q = q_values.mean().item()
+        if step == config["nr_of_steps_act"] - 1:
+            final_q = q_values.mean().item()
         
         actor_loss = -q_values.mean()
         
@@ -217,6 +314,9 @@ def pg_variation(parent, critic, replay_buffer, config):
     offspring.parent_1_id = getattr(parent, 'id', -1)
     offspring.parent_2_id = None
     offspring.type = "pg"
+    
+    # [LOGGING ADDED] Store Q improvement on offspring
+    offspring.pg_q_improvement = final_q - initial_q if (initial_q and final_q) else None
     
     return offspring
 
@@ -240,14 +340,31 @@ def main(env, config):
     if not os.path.exists(config["save_path"]):
         os.makedirs(f"{config['save_path']}/models/", exist_ok=True)
     
-    # Log file
+    # [LOGGING ADDED] Create log files
     log_file = open(f"{config['save_path']}/progress.dat", 'w')
+    
+    # [LOGGING ADDED] CSV file for detailed metrics
+    metrics_file = open(f"{config['save_path']}/metrics.csv", 'w')
+    metrics_file.write("evals,iteration,coverage,coverage_pct,max_fitness,mean_fitness,qd_score,"
+                       "pg_added,pg_total,ga_added,ga_total,critic_loss,avg_q,buffer_size,"
+                       "iter_time,phase\n")
+    
+    # [LOGGING ADDED] Track global metrics
+    iteration = 0
+    total_time = 0
+    best_fitness_ever = float('-inf')
     
     # ==========================================================================
     # Initialize components (same as original)
     # ==========================================================================
     
+    print("=" * 60)
+    print("PGA-MAP-Elites Initialization")
+    print("=" * 60)
+    
     # Compute CVT centroids
+    print(f"Computing CVT with {config['n_niches']} niches, {config['dim_map']}D behavior space...")
+    cvt_start = time.time()
     centroids = cvt(
         config["n_niches"],
         config["dim_map"],
@@ -255,12 +372,14 @@ def main(env, config):
         cvt_use_cache=True
     )
     kdt = KDTree(centroids, leaf_size=30, metric='euclidean')
+    print(f"  CVT computed in {time.time() - cvt_start:.1f}s")
     
     # Initialize archive (dict-based, like original)
     archive = {}
     
     # Initialize replay buffer
     replay_buffer = ReplayBuffer(config["state_dim"], config["action_dim"])
+    print(f"  Replay buffer initialized (max size: {replay_buffer.max_size:,})")
     
     # Initialize critic (TD3-style twin critics)
     critic = Critic(
@@ -273,8 +392,16 @@ def main(env, config):
         noise_clip=config["noise_clip"],
         policy_freq=config["policy_freq"]
     )
+    print(f"  Critic initialized (TD3-style twin critics)")
     
-    # [REMOVED] Greedy controller - using archive policies directly instead
+    print(f"\nConfig Summary:")
+    print(f"  Max evaluations: {config['max_evals']:,}")
+    print(f"  Random init: {config['random_init']} evals")
+    print(f"  Batch size: {config['eval_batch_size']}")
+    print(f"  Variation split: {config['proportion_evo']*100:.0f}% GA, {(1-config['proportion_evo'])*100:.0f}% PG")
+    print(f"  Critic training: {config['nr_of_steps_crit']} steps/iter")
+    print(f"  PG variation: {config['nr_of_steps_act']} steps/offspring")
+    print("=" * 60)
     
     n_evals = 0
     b_evals = 0
@@ -284,14 +411,25 @@ def main(env, config):
     # ==========================================================================
     
     while n_evals < config["max_evals"]:
-        print(f"Archive size: {len(archive)}")
+        iteration += 1
+        iter_start = time.time()  # [LOGGING ADDED]
+        
+        print(f"\n{'='*60}")
+        print(f"Iteration {iteration} | Evals: {n_evals}/{config['max_evals']}")
+        print(f"{'='*60}")
+        
         to_evaluate = []
+        phase = "random" if n_evals < config["random_init"] else "variation"
+        
+        # [LOGGING ADDED] Track variation success
+        pg_offspring = []
+        ga_offspring = []
         
         # ======================================================================
         # Random initialization phase
         # ======================================================================
         if n_evals < config["random_init"]:
-            print("Random initialization phase")
+            print(f"Phase: Random Initialization ({n_evals}/{config['random_init']})")
             for _ in range(config["eval_batch_size"]):
                 # Create random actor
                 actor = Actor(
@@ -300,19 +438,35 @@ def main(env, config):
                     config["max_action"],
                     config["neurons_list"]
                 )
+                actor.type = "random"
                 to_evaluate.append(actor)
         
         # ======================================================================
         # Selection and variation phase
         # ======================================================================
         else:
-            print("Selection/Variation phase")
+            print(f"Phase: Selection & Variation")
             
             # Train critic (Algorithm 4 from paper)
+            critic_metrics = {}
             if replay_buffer.size > config["train_batch_size"]:
-                print(f"  Training critic for {config['nr_of_steps_crit']} steps...")
-                for _ in range(config["nr_of_steps_crit"]):
-                    critic.train_step(replay_buffer, config["train_batch_size"])
+                print(f"\n  [Critic Training]")
+                critic_start = time.time()
+                
+                # [LOGGING ADDED] Use verbose mode for critic
+                critic_metrics = critic.train(
+                    archive, 
+                    replay_buffer, 
+                    config["nr_of_steps_crit"], 
+                    config["train_batch_size"],
+                    verbose=config.get("verbose", False)
+                )
+                
+                critic_time = time.time() - critic_start
+                print(f"    Time: {critic_time:.1f}s")
+                if critic_metrics:
+                    print(f"    Final Critic Loss: {critic_metrics.get('critic_loss', 0):.4f}")
+                    print(f"    Avg Q-value: {critic_metrics.get('avg_q', 0):.4f}")
             
             # Determine split between GA and PG variation
             n_evo = int(config["eval_batch_size"] * config["proportion_evo"])
@@ -323,15 +477,26 @@ def main(env, config):
             
             # --- PG Variation ---
             if n_pg > 0 and replay_buffer.size > config["train_batch_size"]:
-                print(f"  Generating {n_pg} PG offspring...")
-                for _ in range(n_pg):
+                print(f"\n  [PG Variation] Generating {n_pg} offspring...")
+                pg_start = time.time()
+                
+                for i in range(n_pg):
                     parent_key = archive_keys[np.random.randint(len(archive_keys))]
                     parent = archive[parent_key].x
                     offspring = pg_variation(parent, critic, replay_buffer, config)
                     to_evaluate.append(offspring)
+                    pg_offspring.append(offspring)
+                    
+                    # [LOGGING ADDED] Progress for long PG generation
+                    if (i + 1) % 10 == 0:
+                        print(f"    Generated {i+1}/{n_pg} PG offspring...")
+                
+                print(f"    Time: {time.time() - pg_start:.1f}s")
             
             # --- GA Variation (iso_dd) ---
-            print(f"  Generating {n_evo} GA offspring...")
+            print(f"\n  [GA Variation] Generating {n_evo} offspring...")
+            ga_start = time.time()
+            
             for _ in range(n_evo):
                 # Select two parents
                 idx1, idx2 = np.random.randint(len(archive_keys), size=2)
@@ -343,12 +508,26 @@ def main(env, config):
                     config["line_sigma"]
                 )
                 to_evaluate.append(offspring)
+                ga_offspring.append(offspring)
+            
+            print(f"    Time: {time.time() - ga_start:.1f}s")
         
         # ======================================================================
         # Evaluate batch and add to archive
         # ======================================================================
-        print(f"  Evaluating {len(to_evaluate)} policies...")
-        for actor in to_evaluate:
+        print(f"\n  [Evaluation] Evaluating {len(to_evaluate)} policies...")
+        eval_start = time.time()
+        
+        # [LOGGING ADDED] Track additions by type
+        pg_added = 0
+        ga_added = 0
+        random_added = 0
+        
+        # [LOGGING ADDED] Track fitness/BD of evaluated policies
+        eval_fitnesses = []
+        eval_bds = []
+        
+        for idx, actor in enumerate(to_evaluate):
             fitness, bd, transitions, alive = evaluate_policy(actor, env)
             
             # Add transitions to replay buffer
@@ -359,33 +538,116 @@ def main(env, config):
             
             # Create Individual and try to add to archive
             individual = Individual(actor, bd_normalized, fitness)
-            add_to_archive(individual, bd_normalized, archive, kdt)
+            was_added = add_to_archive(individual, bd_normalized, archive, kdt)
+            
+            # [LOGGING ADDED] Track by type
+            if was_added:
+                if actor.type == "pg":
+                    pg_added += 1
+                elif actor.type == "iso_dd":
+                    ga_added += 1
+                elif actor.type == "random":
+                    random_added += 1
+            
+            # [LOGGING ADDED] Collect evaluation stats
+            eval_fitnesses.append(fitness)
+            eval_bds.append(bd_normalized)
+            
+            # [LOGGING ADDED] Progress for long evaluations
+            if (idx + 1) % 25 == 0:
+                print(f"    Evaluated {idx+1}/{len(to_evaluate)}...")
+        
+        eval_time = time.time() - eval_start
+        print(f"    Time: {eval_time:.1f}s")
+        
+        # [LOGGING ADDED] Evaluation batch statistics
+        eval_fitnesses = np.array(eval_fitnesses)
+        eval_bds = np.array(eval_bds)
+        print(f"    Batch fitness: mean={np.mean(eval_fitnesses):.4f}, "
+              f"max={np.max(eval_fitnesses):.4f}, min={np.min(eval_fitnesses):.4f}")
         
         n_evals += len(to_evaluate)
         b_evals += len(to_evaluate)
-        print(f"[{n_evals}/{config['max_evals']}]")
         
         # ======================================================================
         # Logging and saving
         # ======================================================================
+        iter_time = time.time() - iter_start
+        total_time += iter_time
+        
+        print(f"\n  [Summary]")
+        print(f"    Iteration time: {iter_time:.1f}s (total: {total_time:.1f}s)")
+        
+        # [LOGGING ADDED] Log archive metrics
+        archive_metrics = log_archive_metrics(archive, config["n_niches"])
+        
+        # [LOGGING ADDED] Log replay buffer
+        log_replay_buffer(replay_buffer)
+        
+        # [LOGGING ADDED] Log variation success (only in variation phase)
+        if phase == "variation":
+            var_stats = log_variation_stats(
+                pg_added, len(pg_offspring),
+                ga_added, len(ga_offspring)
+            )
+        else:
+            print(f"  Random policies added: {random_added}/{len(to_evaluate)}")
+        
+        # [LOGGING ADDED] Track best fitness
+        if archive_metrics and archive_metrics.get('max_fitness', 0) > best_fitness_ever:
+            best_fitness_ever = archive_metrics['max_fitness']
+            print(f"  *** New best fitness: {best_fitness_ever:.4f} ***")
+        
+        # Write to log files
         if len(archive) > 0:
             fit_list = np.array([x.fitness for x in archive.values()])
-            print(f"  Max fitness: {fit_list.max():.4f}")
-            print(f"  Mean fitness: {np.mean(fit_list):.4f}")
-            print(f"  Coverage: {len(archive)}/{config['n_niches']} ({100*len(archive)/config['n_niches']:.1f}%)")
-            
             log_file.write(f"{n_evals} {len(archive)} {fit_list.max():.4f} "
                           f"{np.sum(fit_list):.4f} {np.mean(fit_list):.4f}\n")
             log_file.flush()
+            
+            # [LOGGING ADDED] Write detailed metrics CSV
+            critic_loss = critic_metrics.get('critic_loss', 0) if 'critic_metrics' in dir() else 0
+            avg_q = critic_metrics.get('avg_q', 0) if 'critic_metrics' in dir() else 0
+            pg_add = pg_added if phase == "variation" else 0
+            pg_tot = len(pg_offspring) if phase == "variation" else 0
+            ga_add = ga_added if phase == "variation" else random_added
+            ga_tot = len(ga_offspring) if phase == "variation" else len(to_evaluate)
+            
+            metrics_file.write(f"{n_evals},{iteration},{len(archive)},{archive_metrics['coverage_pct']:.2f},"
+                              f"{archive_metrics['max_fitness']:.4f},{archive_metrics['mean_fitness']:.4f},"
+                              f"{archive_metrics['qd_score']:.4f},{pg_add},{pg_tot},{ga_add},{ga_tot},"
+                              f"{critic_loss:.4f},{avg_q:.4f},{replay_buffer.size},"
+                              f"{iter_time:.2f},{phase}\n")
+            metrics_file.flush()
         
         # Save archive periodically
         if b_evals >= config["save_period"]:
+            print(f"\n  [Saving] Archive checkpoint at {n_evals} evals...")
             save_archive(archive, n_evals, "pga_me", config["save_path"])
             b_evals = 0
+    
+    # ==========================================================================
+    # Final summary
+    # ==========================================================================
+    print(f"\n{'='*60}")
+    print("PGA-MAP-Elites Complete!")
+    print(f"{'='*60}")
+    print(f"Total evaluations: {n_evals:,}")
+    print(f"Total time: {total_time:.1f}s ({total_time/60:.1f} min)")
+    print(f"Avg time per iteration: {total_time/iteration:.1f}s")
+    
+    log_archive_metrics(archive, config["n_niches"])
     
     # Final save
     save_archive(archive, n_evals, "pga_me", config["save_path"], save_models=True)
     log_file.close()
+    metrics_file.close()
+    
+    # [LOGGING ADDED] Save critic training history
+    if hasattr(critic, 'get_training_history'):
+        history = critic.get_training_history()
+        np.savez(f"{config['save_path']}/critic_history.npz", **history)
+        print(f"  Critic training history saved to {config['save_path']}/critic_history.npz")
     
     return archive
 
@@ -394,6 +656,7 @@ def main(env, config):
 # [ADDED] Example usage with dummy environment
 # =============================================================================
 if __name__ == "__main__":
+    import numpy as np
     
     # Dummy environment for testing (replace with your portfolio env)
     class DummyPortfolioEnv:
@@ -420,6 +683,9 @@ if __name__ == "__main__":
     # Update config to match env
     config["state_dim"] = env.state_dim
     config["action_dim"] = env.action_dim
+    
+    # [LOGGING ADDED] Enable verbose logging
+    config["verbose"] = True
     
     # Run algorithm
     print("Starting PGA-MAP-Elites...")

@@ -248,6 +248,11 @@ class DDPGTrainer:
         early_stopping: bool = True,
         patience: int = 2,
         min_delta: float = 0,
+        #TD3 for PGA-MAP-ELITES
+        use_td3: bool = False,
+        policy_freq: int = 2,
+        policy_noise: float = 0.2,
+        noise_clip: float = 0.5,
     ):
         self.number_of_assets = number_of_assets
         self.actor = actor
@@ -259,6 +264,13 @@ class DDPGTrainer:
         self.risk_preference = risk_preference
         self.gamma = gamma
         self.early_stopper = EarlyStopper(patience, min_delta) if early_stopping else None
+
+        #TD3 for PGA-MAP-ELITES
+        self.use_td3 = use_td3
+        self.policy_freq = policy_freq
+        self.policy_noise = policy_noise
+        self.noise_clip = noise_clip
+        self.total_it = 0
 
         self.actor_optimizer = optimizer(
             actor.parameters(),
@@ -275,9 +287,18 @@ class DDPGTrainer:
             # Initialize update factor and target networks
             self.target_actor = deepcopy(actor)
             self.target_critic = deepcopy(critic)
+
+            #TD3 for PGA-MAP-ELITES
+            if use_td3:
+                self.critic2 = deepcopy(critic)
+                self.critic2_optimizer = optimizer(self.critic2.parameters(), lr=critic_lr)
+                self.target_critic2 = deepcopy(self.critic2)
             # Synchronize target networks with main networks
             self._soft_update(self.target_actor, self.actor, tau=1.0)
             self._soft_update(self.target_critic, self.critic, tau=1.0)
+            #TD3 for PGA-MAP-ELITES
+            if self.use_td3:
+                                self._soft_update(self.target_critic2, self.critic2, self.tau)
 
     def _soft_update(self, target, source, tau):
         '''Soft-update target network parameters.'''
@@ -315,6 +336,9 @@ class DDPGTrainer:
 
             for state, next_state in train_loader:
 
+                #TD3 for PGA-MAP-ELITES
+                if self.use_td3:
+                    self.total_it += 1
                 # Compute current portfolio allocation and Q-value
                 portfolio_allocation = self.actor(state.flatten())
                 exploration_noise = torch.normal(0, noise, portfolio_allocation.shape)
@@ -324,12 +348,12 @@ class DDPGTrainer:
                 avg_profit = torch.mean(
                     torch.sum(state.view(-1, self.number_of_assets) * noisy_portfolio_allocation,
                               dim=-1)
-                ).detach().cpu()
+                    ).detach().cpu()
                 volatility = torch.std(
                     torch.sum(state.view(-1, self.number_of_assets) * noisy_portfolio_allocation,
                               dim=-1),
                     correction=0, # maximum likelihood estimation
-                ).detach().cpu()
+                    ).detach().cpu()
                 #reward = avg_profit + self.risk_preference * volatility
 
                 portfolio_returns = torch.sum(
@@ -360,10 +384,16 @@ class DDPGTrainer:
                 # updates are enabled, else use regular ones
                 if self.soft_update:
                     next_portfolio_allocation = self.target_actor(next_state.flatten())
-                    next_q_value = self.target_critic(
-                        torch.cat((next_state.flatten(),
-                                next_portfolio_allocation.flatten()))
-                    )
+                    #TD3 for PGA-MAP-ELITES
+                    if self.use_td3:
+                        noise = (torch.randn_like(next_portfolio_allocation) * self.policy_noise).clamp(-self.noise_clip, self.noise_clip)
+                        next_portfolio_allocation = next_portfolio_allocation + noise
+                        q1 = self.target_critic(torch.cat((next_state.flatten(), next_portfolio_allocation.flatten())))
+                        q2 = self.target_critic2(torch.cat((next_state.flatten(), next_portfolio_allocation.flatten())))
+                        next_q_value = torch.min(q1, q2)
+                    else:
+                        next_q_value = self.target_critic(torch.cat((next_state.flatten(), next_portfolio_allocation.flatten())))       
+                
                 else:
                     next_portfolio_allocation = self.actor(next_state.flatten())
                     next_q_value = self.critic(
@@ -384,23 +414,32 @@ class DDPGTrainer:
                 critic_loss.backward(retain_graph=True)
                 self.critic_optimizer.step()
 
+                if self.use_td3:
+                    q_value2 = self.critic2(torch.cat((state.flatten(), noisy_portfolio_allocation.flatten())))
+                    critic2_loss = (target_q_value - q_value2).pow(2)
+                    self.critic2_optimizer.zero_grad()
+                    critic2_loss.backward(retain_graph=True)
+                    self.critic2_optimizer.step()
+
                 # Actor evaluation
                 critic_input = torch.cat(
                     (state.flatten(), portfolio_allocation.flatten()))
-                actor_loss = -self.critic(critic_input)
+                
+                if not self.use_td3 or (self.total_it % self.policy_freq == 0):
+                    actor_loss = -self.critic(critic_input)
 
-                # Add L1/L2 regularization to actor loss
-                l1_actor = sum(weight.abs().sum() for weight in self.actor.parameters())
-                l2_actor = sum(weight.pow(2).sum() for weight in self.actor.parameters())
-                actor_loss += self.l1_lambda * l1_actor + self.l2_lambda * l2_actor
+                    # Add L1/L2 regularization to actor loss
+                    l1_actor = sum(weight.abs().sum() for weight in self.actor.parameters())
+                    l2_actor = sum(weight.pow(2).sum() for weight in self.actor.parameters())
+                    actor_loss += self.l1_lambda * l1_actor + self.l2_lambda * l2_actor
 
-                # Actor backpropagation
-                self.actor_optimizer.zero_grad()
-                actor_loss.backward()
-                self.actor_optimizer.step()
+                    # Actor backpropagation
+                    self.actor_optimizer.zero_grad()
+                    actor_loss.backward()
+                    self.actor_optimizer.step()
 
-                total_actor_loss += actor_loss.item()
-                total_critic_loss += critic_loss.item()
+                    total_actor_loss += actor_loss.item()
+                    total_critic_loss += critic_loss.item()
 
             # Average losses
             avg_actor_loss = total_actor_loss / len(train_loader)
