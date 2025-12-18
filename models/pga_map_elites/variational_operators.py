@@ -2,71 +2,72 @@ import copy
 
 import torch
 
-
-def variation_ga(parent1, parent2, iso_sigma=0.005, line_sigma=0.05):
+def ga_variation(parent1, parent2, iso_sigma=0.005, line_sigma=0.05):
     """
-    Algorithm 5, lines 10-12: VARIATION_GA
-    Directional variation (Vassiliades & Mouret, 2018)
+    Iso-line (directional) variation operator.
     
-    φ̂ = φ1 + σ1·N(0, I) + σ2·(φ2 - φ1)·N(0, 1)
+    📝 PAPER (Algorithm 5, lines 10-12, Equation 6):
+       φ̂ = φ1 + σ1·N(0,I) + σ2·(φ2-φ1)·N(0,1)
     
-    Args:
-        parent1, parent2: Parent policy networks
-        iso_sigma: σ1 = 0.005 (isotropic noise)
-        line_sigma: σ2 = 0.05 (directional displacement)
+    📝 OFFICIAL CODE: variational_operators.py
+       iso_sigma = 0.005 (isotropic noise)
+       line_sigma = 0.05 (directional displacement)
     
-    Returns:
-        offspring: New policy network
+    🎓 SIMPLIFICATION: None - this is already simple!
     """
-    # Get flattened parameters
-    params1 = parent1.get_params()
-    params2 = parent2.get_params()
+    params1 = parent1.get_flat_params()
+    params2 = parent2.get_flat_params()
     
     # Isotropic Gaussian noise
     iso_noise = torch.randn_like(params1) * iso_sigma
     
-    # Directional component (interpolation toward parent2)
+    # Directional component toward parent2
     direction = params2 - params1
     line_noise = torch.randn(1).item() * line_sigma
     
-    # Offspring parameters (Equation 6 in paper)
+    # Offspring = parent1 + noise + direction
     offspring_params = params1 + iso_noise + line_noise * direction
     
-    # Create offspring network
+    # Create new network with offspring params
     offspring = copy.deepcopy(parent1)
-    offspring.set_params(offspring_params)
+    offspring.set_flat_params(offspring_params)
     
     return offspring
 
-def variation_pg(parent, critic, replay_buffer, n_grad=10, batch_size=256, lr=0.001):
+
+def pg_variation(parent, critic, replay_buffer, n_grad=10, lr=0.001, batch_size=256):
     """
-    Algorithm 5, lines 13-18: VARIATION_PG
-    Apply n_grad steps of policy gradient
+    Policy Gradient variation operator.
     
-    Args:
-        parent: Parent policy to mutate
-        critic: Trained Q_θ1 network
-        replay_buffer: Experience buffer B
-        n_grad: Number of gradient steps (default 10, paper range 10-50)
-        batch_size: N = 256
-        lr: Learning rate for PG updates (0.001 in paper)
+    📝 PAPER (Algorithm 5, lines 13-18):
+       Apply n_grad steps of gradient descent maximizing Q1
+       ∇_φ J(φ) = (1/N) Σ ∇_φ π_φ(s) ∇_a Q_θ1(s,a)|_{a=π_φ(s)}
     
-    Returns:
-        offspring: Policy mutated via PG
+    📝 OFFICIAL CODE: 
+       n_grad = 10-50 (we use 10 for speed)
+       lr = 0.001
+       Uses Adam optimizer
+    
+    🎓 SIMPLIFICATION: 
+       - Fixed 10 gradient steps (paper uses 10-50)
+       - Could reduce batch_size for testing
     """
     offspring = copy.deepcopy(parent)
     optimizer = torch.optim.Adam(offspring.parameters(), lr=lr)
     
     for _ in range(n_grad):
-        # Sample transitions (line 16)
-        state, _, _, _, _ = replay_buffer.sample(batch_size)
+        # Sample from replay buffer
+        states, _, _, _, _ = replay_buffer.sample(batch_size)
         
-        # Policy gradient: maximize Q_θ1(s, π(s)) (line 17)
-        # ∇_φ J(φ) = (1/N) Σ ∇_φ π_φ(s) ∇_a Q_θ1(s, a)|_{a=π_φ(s)}
-        actor_loss = -critic.Q1(state, offspring(state)).mean()
+        # Policy gradient: maximize Q1(s, π(s))
+        actions = offspring(states)
+        q_value = critic.Q1(states, actions)
+        
+        # Loss = -Q (we want to maximize Q)
+        loss = -q_value.mean()
         
         optimizer.zero_grad()
-        actor_loss.backward()
+        loss.backward()
         optimizer.step()
     
     return offspring

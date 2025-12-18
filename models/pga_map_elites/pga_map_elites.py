@@ -1,37 +1,71 @@
-import copy
 
-import numpy as np
+"""
+PGA-MAP-Elites: Simplified Implementation for Portfolio Optimization
+=====================================================================
+
+Based on:
+- Paper: Nilsson & Cully, GECCO 2021 (Algorithm 3, 4, 5)
+- Official repo: github.com/ollenilsson19/PGA-MAP-Elites
+- TD3 repo: github.com/sfujim/TD3
+
+YOUR EXISTING DDPG COMPONENTS THAT WE REUSE:
+- Actor network (policy) ✓
+- Critic network ✓  
+- Replay buffer ✓
+- Target networks ✓
+- Soft updates ✓
+
+WHAT WE ADD:
+- Second critic (Q2) for TD3's clipped double Q-learning
+- CVT Archive (stores diverse portfolio policies)
+- GA variation (iso-line operator)
+- PG variation (policy gradient mutation)
+"""
+
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
+import copy
+from sklearn.cluster import KMeans
+from scipy.spatial import cKDTree
+from collections import deque
 
-from .networks import Critic, Actor
-from .archive import CVTArchive
-from .replay_buffer import ReplayBuffer
-from .variational_operators import variation
+from replay_buffer import ReplayBuffer
+from variational_operators import ga_variation, pg_variation
+from archive import CVTArchive
 
 
 class TD3Trainer:
     """
-    TD3-style critic training for PGA-MAP-Elites
-    Called once per MAP-Elites iteration (Algorithm 3, line 12)
+    TD3-style critic training for PGA-MAP-Elites.
+    
+    📝 PAPER (Algorithm 4):
+       - Train for n_crit iterations (default 300)
+       - Delayed policy updates every d=2 iterations
+       - Target smoothing with clipped noise
+       - Soft updates with τ=0.005
+    
+    📝 OFFICIAL TD3 CODE (sfujim/TD3):
+       All hyperparameters verified ✓
+    
+    🎓 SIMPLIFICATION:
+       - n_crit reduced to 100 for faster testing
+       - Can run fewer iterations, just call train() more often
     """
-    def __init__(
-        self,
-        state_dim,
-        action_dim,
-        max_action,
-        discount=0.99,           # γ
-        tau=0.005,               # Target update rate
-        policy_noise=0.2,        # σ_p (target smoothing)
-        noise_clip=0.5,          # c (clipping range)
-        policy_freq=2,           # d (delayed updates)
-        lr=3e-4                  # Learning rate
-    ):
+    def __init__(self, state_dim, action_dim, 
+                 gamma=0.99,           # 📝 VERIFIED: discount factor
+                 tau=0.005,            # 📝 VERIFIED: soft update rate  
+                 policy_noise=0.2,     # 📝 VERIFIED: target smoothing noise
+                 noise_clip=0.5,       # 📝 VERIFIED: noise clipping
+                 policy_freq=2,        # 📝 VERIFIED: delayed updates
+                 lr=3e-4):             # 📝 VERIFIED: learning rate
+        
         # Main networks
         self.critic = Critic(state_dim, action_dim)
-        self.greedy_actor = Actor(state_dim, action_dim, max_action)
+        self.greedy_actor = Actor(state_dim, action_dim)
         
-        # Target networks (initialized as copies)
+        # Target networks (📝 PAPER: initialized as copies)
         self.critic_target = copy.deepcopy(self.critic)
         self.actor_target = copy.deepcopy(self.greedy_actor)
         
@@ -40,215 +74,236 @@ class TD3Trainer:
         self.actor_optimizer = torch.optim.Adam(self.greedy_actor.parameters(), lr=lr)
         
         # Hyperparameters
-        self.discount = discount
+        self.gamma = gamma
         self.tau = tau
         self.policy_noise = policy_noise
         self.noise_clip = noise_clip
         self.policy_freq = policy_freq
-        self.max_action = max_action
         
         self.total_it = 0
     
-    def train(self, replay_buffer, batch_size=256, n_crit=300):
+    def train(self, replay_buffer, batch_size=256, n_crit=100):
         """
-        Algorithm 4: TRAIN_CRITIC procedure
+        Train critics and greedy actor.
         
-        Args:
-            replay_buffer: Experience buffer B
-            batch_size: N = 256
-            n_crit: Number of training iterations (300 default)
+        📝 PAPER: Called once per MAP-Elites iteration
+        📝 PAPER: n_crit = 300 (we use 100 for speed)
         
-        Returns:
-            greedy_actor: Current greedy controller π_φc
+        🎓 KEY INSIGHT: The greedy_actor is ONLY for computing targets!
+           It never goes into the archive. Archive policies come from variation.
         """
         for _ in range(n_crit):
             self.total_it += 1
             
-            # Sample batch (line 3)
-            state, action, next_state, reward, done = replay_buffer.sample(batch_size)
+            # Sample batch
+            state, action, reward, next_state, done = replay_buffer.sample(batch_size)
             
             with torch.no_grad():
-                # Target policy smoothing (line 4)
+                # 📝 PAPER (Algorithm 4, line 4): Target policy smoothing
                 noise = (
                     torch.randn_like(action) * self.policy_noise
                 ).clamp(-self.noise_clip, self.noise_clip)
                 
-                # Compute target action with noise (line 5)
-                next_action = (
-                    self.actor_target(next_state) + noise
-                ).clamp(-self.max_action, self.max_action)
+                # Get target action from target actor + noise
+                next_action = self.actor_target(next_state) + noise
+                # 🎓 FOR PORTFOLIO: Renormalize to sum to 1
+                next_action = F.softmax(next_action, dim=-1)
                 
-                # Clipped double Q-learning: min of two targets (line 5)
-                target_Q1, target_Q2 = self.critic_target(next_state, next_action)
-                target_Q = torch.min(target_Q1, target_Q2)
-                target_Q = reward + (1 - done) * self.discount * target_Q
+                # 📝 PAPER (Algorithm 4, line 5): Clipped double Q-learning
+                target_q1, target_q2 = self.critic_target(next_state, next_action)
+                target_q = torch.min(target_q1, target_q2)
+                target_q = reward + (1 - done) * self.gamma * target_q
             
             # Get current Q estimates
-            current_Q1, current_Q2 = self.critic(state, action)
+            current_q1, current_q2 = self.critic(state, action)
             
-            # Critic loss (line 6)
-            critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
+            # 📝 PAPER (Algorithm 4, line 6): Critic loss
+            critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
             
-            # Update critics
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
             self.critic_optimizer.step()
             
-            # Delayed policy updates (line 7)
+            # 📝 PAPER (Algorithm 4, line 7): Delayed policy updates
             if self.total_it % self.policy_freq == 0:
-                # Actor loss: maximize Q1 (line 8-9)
-                # ∇_φ J(φ) = (1/N) Σ ∇_φ π_φc(s) ∇_a Q_θ1(s, a)|_{a=π_φc(s)}
+                # Actor loss: maximize Q1
                 actor_loss = -self.critic.Q1(state, self.greedy_actor(state)).mean()
                 
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
                 self.actor_optimizer.step()
                 
-                # Soft update targets (lines 10-11)
-                for param, target_param in zip(
-                    self.critic.parameters(), self.critic_target.parameters()
-                ):
+                # 📝 PAPER (Algorithm 4, lines 10-11): Soft update targets
+                for param, target_param in zip(self.critic.parameters(), 
+                                                self.critic_target.parameters()):
                     target_param.data.copy_(
                         self.tau * param.data + (1 - self.tau) * target_param.data
                     )
                 
-                for param, target_param in zip(
-                    self.greedy_actor.parameters(), self.actor_target.parameters()
-                ):
+                for param, target_param in zip(self.greedy_actor.parameters(),
+                                                self.actor_target.parameters()):
                     target_param.data.copy_(
                         self.tau * param.data + (1 - self.tau) * target_param.data
                     )
         
         return self.greedy_actor
-    
+
+
+# =============================================================================
+# MAIN PGA-MAP-ELITES ALGORITHM
+# =============================================================================
+
 class PGAMAPElites:
     """
-    Complete PGA-MAP-Elites implementation
-    Based on Algorithm 3 in the GECCO 2021 paper
+    Complete PGA-MAP-Elites algorithm.
+    
+    📝 PAPER (Algorithm 3): Main loop structure
+    
+    🎓 SIMPLIFICATION:
+       - Reduced default parameters for faster testing
+       - Simpler logging
+       - evaluate_policy must be customized for your environment
     """
-    def __init__(
-        self,
-        state_dim,
-        action_dim,
-        max_action,
-        n_niches=1024,
-        behavior_dim=2,
-        eval_batch_size=100,         # b
-        random_init=1000,            # G
-        max_evals=1000000,           # I
-        proportion_evo=0.5,
-        n_crit=300,
-        n_grad=10
-    ):
-        # Archive
-        self.archive = CVTArchive(n_niches, behavior_dim)
+    def __init__(self, 
+                 state_dim,
+                 action_dim,
+                 n_niches=100,           # 🎓 Reduced from 1024
+                 behavior_dim=2,
+                 bd_bounds=((0, 1), (0, 1)),
+                 batch_size=20,          # 🎓 Reduced from 100
+                 random_init=200,        # 🎓 Reduced from 1000
+                 proportion_evo=0.5,     # 📝 VERIFIED: 50% GA, 50% PG
+                 n_crit=100,             # 🎓 Reduced from 300
+                 n_grad=10):             # 📝 VERIFIED: 10-50
         
-        # TD3 Trainer (critics + greedy controller)
-        self.trainer = TD3Trainer(state_dim, action_dim, max_action)
-        
-        # Replay buffer
-        self.replay_buffer = ReplayBuffer(state_dim, action_dim)
-        
-        # Parameters
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.max_action = max_action
-        self.eval_batch_size = eval_batch_size
+        self.batch_size = batch_size
         self.random_init = random_init
-        self.max_evals = max_evals
         self.proportion_evo = proportion_evo
         self.n_crit = n_crit
         self.n_grad = n_grad
         
+        # Initialize components
+        self.archive = CVTArchive(n_niches, behavior_dim, bd_bounds)
+        self.trainer = TD3Trainer(state_dim, action_dim)
+        self.replay_buffer = ReplayBuffer()
+        
         self.total_evals = 0
     
-    def evaluate_policy(self, policy, env, max_steps=1000):
+    def random_policy(self):
+        """Create random initialized policy"""
+        return Actor(self.state_dim, self.action_dim)
+    
+    def evaluate_policy(self, policy, env):
         """
-        Algorithm 3, line 19: evaluate(π_φ)
-        Returns (fitness, behavior_descriptor, transitions)
+        Evaluate policy in environment.
+        
+        🎓 YOU MUST CUSTOMIZE THIS for your portfolio environment!
+        
+        Returns: (fitness, behavior_descriptor, transitions)
         """
+        # Example structure - replace with your actual evaluation
         state = env.reset()
         transitions = []
         total_reward = 0
         
-        for _ in range(max_steps):
-            action = policy(torch.FloatTensor(state)).detach().numpy()
-            next_state, reward, done, info = env.step(action)
+        for _ in range(env.max_steps):
+            with torch.no_grad():
+                action = policy(torch.FloatTensor(state)).numpy()
             
-            transitions.append((state, action, next_state, reward, float(done)))
+            next_state, reward, done, info = env.step(action)
+            transitions.append((state, action, reward, next_state, float(done)))
             total_reward += reward
             state = next_state
             
             if done:
                 break
         
-        # Compute behavior descriptor (domain-specific)
-        behavior_descriptor = self.compute_bd(transitions, info)
+        # 🎓 CUSTOMIZE: Extract your behavior descriptor
+        # For portfolio: could be (volatility, diversification)
+        behavior = np.array([
+            info.get('volatility', 0.5),
+            info.get('diversification', 0.5)
+        ])
         
-        return total_reward, behavior_descriptor, transitions
+        return total_reward, behavior, transitions
     
-    def compute_bd(self, transitions, info):
+    def run(self, env, max_evals=10000, verbose=True):
         """
-        Compute behavior descriptor from episode.
+        Main PGA-MAP-Elites loop.
         
-        ⚠️ DEVIATION: Must be customized for portfolio optimization.
+        📝 PAPER (Algorithm 3, lines 8-15)
         """
-        # Example: extract from environment info
-        # For portfolio: volatility, diversification, turnover, etc.
-        return np.array(info.get('behavior_descriptor', [0.0, 0.0]))
-    
-    def random_policy(self):
-        """Generate random policy for initialization"""
-        policy = Actor(self.state_dim, self.action_dim, self.max_action)
-        return policy
-    
-    def run(self, env):
-        """
-        Main loop (Algorithm 3, lines 8-15)
-        """
-        while self.total_evals < self.max_evals:
+        while self.total_evals < max_evals:
             
-            # Initialization phase (lines 9-10)
+            # === PHASE 1: Random Initialization ===
+            # 📝 PAPER (lines 9-10): Random solutions until G evaluations
             if self.total_evals < self.random_init:
-                batch = [self.random_policy() for _ in range(self.eval_batch_size)]
+                batch = [self.random_policy() for _ in range(self.batch_size)]
             
-            # Main phase (lines 11-13)
+            # === PHASE 2: Main Loop ===
+            # 📝 PAPER (lines 11-13)
             else:
-                # Train critic and get greedy controller (line 12)
-                greedy_controller = self.trainer.train(
+                # Step A: Train critics (returns greedy actor)
+                greedy = self.trainer.train(
                     self.replay_buffer, 
                     n_crit=self.n_crit
                 )
                 
-                # Generate offspring via variation (line 13)
-                offspring = variation(
-                    batch_size=self.eval_batch_size - 1,
-                    archive=self.archive,
-                    critic=self.trainer.critic,
-                    replay_buffer=self.replay_buffer,
-                    proportion_evo=self.proportion_evo,
-                    n_grad=self.n_grad
-                )
+                # Step B: Generate offspring via variation
+                n_evo = int((self.batch_size - 1) * self.proportion_evo)
+                n_pg = self.batch_size - 1 - n_evo
                 
-                # Batch = greedy controller + offspring
-                batch = [greedy_controller] + offspring
+                offspring = []
+                
+                # GA variation (iso-line)
+                for _ in range(n_evo):
+                    parents = self.archive.sample(n=2)
+                    if len(parents) >= 2:
+                        child = ga_variation(parents[0], parents[1])
+                    elif len(parents) == 1:
+                        child = ga_variation(parents[0], parents[0])
+                    else:
+                        child = self.random_policy()
+                    offspring.append(child)
+                
+                # PG variation
+                for _ in range(n_pg):
+                    parents = self.archive.sample(n=1)
+                    if parents:
+                        child = pg_variation(
+                            parents[0], 
+                            self.trainer.critic,
+                            self.replay_buffer,
+                            n_grad=self.n_grad
+                        )
+                    else:
+                        child = self.random_policy()
+                    offspring.append(child)
+                
+                # Batch = greedy + offspring
+                batch = [greedy] + offspring
             
-            # Evaluate and add to archive (line 14)
+            # === PHASE 3: Evaluate and Add to Archive ===
+            # 📝 PAPER (line 14, Algorithm 3 lines 17-23)
             for policy in batch:
-                fitness, bd, transitions = self.evaluate_policy(policy, env)
+                fitness, behavior, transitions = self.evaluate_policy(policy, env)
                 
-                # Add transitions to replay buffer (line 20)
-                self.replay_buffer.add_batch(transitions)
+                # Add transitions to replay buffer
+                for t in transitions:
+                    self.replay_buffer.add(*t)
                 
-                # Add to archive (lines 21-23)
-                self.archive.add_to_archive(policy, fitness, bd)
+                # Try to add to archive
+                self.archive.add(policy, fitness, behavior)
             
             self.total_evals += len(batch)
             
             # Logging
-            if self.total_evals % 1000 == 0:
-                coverage = sum(1 for p in self.archive.policies if p is not None)
-                max_fit = np.max(self.archive.fitnesses[self.archive.fitnesses > -np.inf])
-                print(f"Evals: {self.total_evals}, Coverage: {coverage}, Max Fitness: {max_fit:.2f}")
+            if verbose and self.total_evals % 100 == 0:
+                print(f"Evals: {self.total_evals:5d} | "
+                      f"Coverage: {self.archive.coverage:.1%} | "
+                      f"Max Fitness: {self.archive.max_fitness:.3f} | "
+                      f"Buffer: {len(self.replay_buffer)}")
         
         return self.archive

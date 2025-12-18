@@ -45,3 +45,35 @@ class ReplayBuffer:
             torch.FloatTensor(self.reward[ind]),
             torch.FloatTensor(self.done[ind])
         )
+    
+
+class ReplayBuffer:
+    """
+    Simple FIFO replay buffer.
+    
+    📝 PAPER CHECK: Uses 10^6 max size, FIFO replacement
+    📝 YOUR CODE: Likely already has this
+    
+    🎓 SIMPLIFICATION: Using deque instead of numpy arrays
+       (Simpler but slightly slower - fine for learning)
+    """
+    def __init__(self, max_size=100000):  # 🎓 Reduced from 1M for testing
+        self.buffer = deque(maxlen=max_size)
+    
+    def add(self, state, action, reward, next_state, done):
+        self.buffer.append((state, action, reward, next_state, done))
+    
+    def sample(self, batch_size):
+        indices = np.random.choice(len(self.buffer), batch_size, replace=False)
+        batch = [self.buffer[i] for i in indices]
+        
+        states = torch.FloatTensor([t[0] for t in batch])
+        actions = torch.FloatTensor([t[1] for t in batch])
+        rewards = torch.FloatTensor([t[2] for t in batch]).unsqueeze(1)
+        next_states = torch.FloatTensor([t[3] for t in batch])
+        dones = torch.FloatTensor([t[4] for t in batch]).unsqueeze(1)
+        
+        return states, actions, rewards, next_states, dones
+    
+    def __len__(self):
+        return len(self.buffer)
