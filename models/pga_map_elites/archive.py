@@ -1,8 +1,9 @@
 import copy
 
 import numpy as np
-from sklearn.cluster import k_means
-from scipy.spatial import cKDTree
+
+from sklearn.cluster import KMeans
+from sklearn.neighbors import KDTree
 
 
 class CVTArchive:
@@ -13,24 +14,17 @@ class CVTArchive:
             behavior_dim: Dimensionality of behavior descriptor
             cvt_samples: Samples for centroid initialization
         """
-        # Generate uniform samples in behavior space bounds
-        samples = np.random.uniform(
-            low=self.bd_min_values,
-            high=self.bd_max_values,
-            size=(cvt_samples, behavior_dim)
-        )
 
-        # Compute centroids via k-means (Lloyd's algorithm)
-        self.centroids, _, _ = k_means(
-            samples,
-            n_clusters=n_niches,
-            n_init=1,
-            init="random",
-            algorithm="lloyd"
-        )
-
-        # KD-tree for O(log n) nearest neighbor lookup
-        self._kd_tree = cKDTree(self.centroids)
+        samples = np.random.rand(cvt_samples, behavior_dim)
+    
+    # Official uses KMeans class, not k_means function
+    
+        k_means = KMeans(init='k-means++', n_clusters=n_niches,
+                     n_init=1, max_iter=1000000, verbose=1, tol=1e-8)
+        k_means.fit(samples)
+        self.centroids = k_means.cluster_centers_
+    
+        self._kd_tree = KDTree(self.centroids, leaf_size=30, metric='euclidean')
 
         # Archive storage
         self.fitnesses = np.full(n_niches, -np.inf)
