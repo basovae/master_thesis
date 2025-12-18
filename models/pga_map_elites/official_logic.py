@@ -156,7 +156,7 @@ def cvt(k, dim, samples, cvt_use_cache=True):
     print("Computing CVT (this can take a while...):", fname)
     x = np.random.rand(samples, dim) 
     k_means = KMeans(init='k-means++', n_clusters=k,
-                     n_init=1, max_iter=1000000, n_jobs=1, verbose=1, tol=1e-8) #Full is the proper Expectation Maximization algorithm
+                     n_init=1, max_iter=1000000, verbose=1, tol=1e-8) #Full is the proper Expectation Maximization algorithm
     k_means.fit(x)
     write_centroids(k_means.cluster_centers_)
     return k_means.cluster_centers_
