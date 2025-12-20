@@ -1,18 +1,16 @@
-from .pga_map_elites import PGAMAPElites, TD3Trainer
-from .networks import Critic, Actor, PortfolioActor
+from .pga_map_elites import main , config
+#from .official_logic import PGAMAPElites, TD3Trainer
+from .networks import Critic, Actor
 from .archive import CVTArchive
 from .replay_buffer import ReplayBuffer
-from .variational_operators import variation, variation_ga, variation_pg
+from .variational_operators import variation
 
 __all__ = [
-    'PGAMAPElites',
-    'TD3Trainer',
+    'main',
+    'config',
     'Critic',
     'Actor',
-    'PortfolioActor',
     'CVTArchive',
     'ReplayBuffer',
     'variation',
-    'variation_ga',
-    'variation_pg',
 ]

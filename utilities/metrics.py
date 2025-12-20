@@ -6,6 +6,33 @@ import torch.nn as nn
 from utilities.visualization import progress_bar
 
 
+def arima_forecast(data, forecast_size):
+    '''Append ARIMA forecasts to historical data.
+    
+    Args:
+        data: np.array of shape (window_size, n_assets)
+        forecast_size: number of steps to forecast
+    
+    Returns:
+        np.array of shape (window_size + forecast_size, n_assets)
+    '''
+    if forecast_size == 0:
+        return data
+    
+    # Simple last-value forecast (naive baseline)
+    # Replace with actual ARIMA if needed
+    last_row = data[-1:]  # shape (1, n_assets)
+    padding = np.repeat(last_row, forecast_size, axis=0)  # shape (forecast_size, n_assets)
+    return np.vstack([data, padding])
+
+
+def reduce_negatives(weights, floor=-1.0):
+    '''Clamp negative weights to floor (e.g., -100% max short position).'''
+    weights = np.clip(weights, floor, None)
+    # Renormalize to sum to 1
+    return weights / np.sum(np.abs(weights))
+
+
 def sharpe_ratio_series(returns: pd.Series, risk_free_rate: float = 0.0) -> float:
     '''Calculate the Sharpe ratio for a series of returns.
 
@@ -79,7 +106,8 @@ class RLEvaluator:
         self.actor = actor
         self.train_data = train_data
         self.test_data = test_data
-        self.window_size = int(actor.input_size / len(tickers)) - forecast_size
+        #self.window_size = int(actor.input_size / len(tickers)) - forecast_size
+        self.window_size = int(actor.input_size / len(test_data.columns)) - forecast_size
         self.forecast_size = forecast_size
         self.reduce_negatives = reduce_negatives
 
@@ -102,8 +130,10 @@ class RLEvaluator:
         with torch.no_grad():   
             state = torch.tensor(input_data, dtype=torch.float32).flatten()
             portfolio_allocation = self.actor(state).numpy().squeeze()
-        if self.reduce_negatives:
-            portfolio_allocation = reduce_negatives(portfolio_allocation)
+        #if self.reduce_negatives:
+        #    portfolio_allocation = reduce_negatives(portfolio_allocation)
+        for i, ticker in enumerate(self.test_data.columns):
+            print(f'{ticker:<10} {(portfolio_allocation[i]*100):.2f} %')
 
         # Calculate performance on test set
         avg_profit_pa, sharpe = calculate_test_performance(self.test_data,
@@ -111,8 +141,10 @@ class RLEvaluator:
 
         if verbose > 0:
             print('\nPortfolio Allocation (SPO):')
-            for i in range(len(tickers)):
-                print(f'{tickers[i]:<10} {(portfolio_allocation[i]*100):.2f} %')
+            #for i in range(len(tickers)):
+            #    print(f'{tickers[i]:<10} {(portfolio_allocation[i]*100):.2f} %')
+            for i, ticker in enumerate(self.test_data.columns):
+                    print(f'{ticker:<10} {(portfolio_allocation[i]*100):.2f} %')
             print(f'\nProfit p.a. (SPO): {avg_profit_pa*100:.4f} %')
             print(f'Sharpe Ratio (SPO): {sharpe:.4f}\n')
 
@@ -174,8 +206,10 @@ class RLEvaluator:
 
             if verbose > 1:
                 print(f'\nPeriod {i+1} Portfolio Allocations:')
-                for i in range(len(tickers)):
-                    print(f'{tickers[i]:<10} {(portfolio_allocation[i]*100):.2f} %')
+                #for i in range(len(tickers)):
+                #    print(f'{tickers[i]:<10} {(portfolio_allocation[i]*100):.2f} %')
+                for i, ticker in enumerate(self.test_data.columns):
+                    print(f'{ticker:<10} {(portfolio_allocation[i]*100):.2f} %')
  
             # Get daily returns based on rolling test dataset
             daily_portfolio_returns = np.sum(rolling_test_data.values * portfolio_allocation, axis=1)

@@ -22,7 +22,7 @@ import os
 import time  # [LOGGING ADDED] For timing
 
 # Official utils.py (copy-pasted from original repo)
-from official_logic import (
+from .official_logic import (
     ReplayBuffer,
     Individual,
     add_to_archive,
@@ -32,7 +32,7 @@ from official_logic import (
 )
 
 # Your network implementations (keep your existing ones or use original)
-from networks import Actor, Critic
+from .networks import Actor, Critic
 
 
 # =============================================================================
@@ -46,12 +46,12 @@ config = {
     
     # QD params
     "dim_map": 2,             # Behavior descriptor dimension (e.g., volatility, diversification)
-    "n_niches": 1024,         # Number of archive cells (paper uses 1296)
+    "n_niches": 256,         # Number of archive cells (paper uses 1296)
     "max_evals": int(1e5),    # Total evaluations
     "cvt_samples": 25000,     # Samples for CVT computation
     "random_init": 500,       # Random evaluations before PG variation
     "eval_batch_size": 100,   # Batch size per iteration
-    "save_period": 10000,     # Save archive every N evals
+    "save_period": 1000,      # Save archive every N evals
     
     # [ADDED] Behavior descriptor bounds for normalization
     "bd_bounds": ([0.0, 0.0], [0.3, 1.0]),  # (min, max) for each BD dimension

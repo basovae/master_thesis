@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from pga_map_elites import main, config
+from .pga_map_elites import main, config
 
 class PortfolioEnv:
     def __init__(self, data_path, lookback=20, episode_len=50):
@@ -32,11 +32,13 @@ class PortfolioEnv:
         
         return next_state, reward, done, {'portfolio_return': reward}
 
-# Use real data
-env = PortfolioEnv("/Users/ekaterinabasova/Desktop/untitled folder/master_thesis/data.csv")
 
-config["state_dim"] = env.state_dim
-config["action_dim"] = env.action_dim
-config["neurons_list"] = [256, 256]  # Bigger network for 840-dim state
-
-archive = main(env, config)
+# Only run when executed directly, not when imported
+if __name__ == "__main__":
+    env = PortfolioEnv("/Users/ekaterinabasova/Desktop/untitled folder/master_thesis/data.csv")
+    
+    config["state_dim"] = env.state_dim
+    config["action_dim"] = env.action_dim
+    config["neurons_list"] = [256, 256]
+    
+    archive = main(env, config)

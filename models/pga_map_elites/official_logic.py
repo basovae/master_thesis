@@ -24,6 +24,8 @@ from sklearn.cluster import KMeans
 from itertools import count
 from sklearn.neighbors import KDTree
 import pickle
+import os
+
 
 
 
@@ -123,8 +125,16 @@ def add_to_archive(s, centroid, archive, kdt, main=True):
         return 1
 
 
-def __centroids_filename(k, dim): 
-    return 'CVT/centroids_' + str(k) + '_' + str(dim) + '.dat'
+#def __centroids_filename(k, dim): 
+#    return '/CVT/centroids_' + str(k) + '_' + str(dim) + '.dat'
+
+
+def __centroids_filename(k, dim):
+    # Get directory where this file is located
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    cvt_dir = os.path.join(base_dir, 'CVT')
+    os.makedirs(cvt_dir, exist_ok=True)
+    return os.path.join(cvt_dir, f'centroids_{k}_{dim}.dat')
 
 
 def write_centroids(centroids):
