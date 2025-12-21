@@ -1,275 +1,46 @@
 # =============================================================================
-# Portfolio Optimization Experiment Configuration
-# Default values sourced from original papers
+# Default Configuration
+# Edit these values OR override from notebook
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Data Configuration
-# -----------------------------------------------------------------------------
-data:
-  # Number of years of historical data
-  years_of_data: 20
+# --- Data ---
+lookback_window: 20
+train_ratio: 0.7
+val_ratio: 0.15
 
-  # Lookback window for state representation (trading days)
-  lookback_window: 20
+# --- Training ---
+batch_size: 1
+num_epochs: 100
+early_stopping: true
+patience: 10
+hidden_sizes: [64, 64]
 
-  # Assets - set to null to use all available, or specify list
-  assets: null # e.g., ["SPY", "QQQ", "IWM"]
+# --- Optimizer ---
+actor_lr: 0.0001
+critic_lr: 0.001
+gamma: 0.99
+tau: 0.005
+soft_update: true
 
-  # Transaction costs (as fraction, e.g., 0.001 = 0.1%)
-  transaction_cost: 0.001
+# --- DDPG Exploration ---
+noise: 0.2
 
-# -----------------------------------------------------------------------------
-# Validation Configuration
-# -----------------------------------------------------------------------------
-validation:
-  # Strategy: "holdout", "walk_forward", "expanding_window"
-  strategy: "expanding_window"
+# --- DDES (toggle with use_ddes) ---
+use_ddes: false
+ddes_alpha: 1.0
+ddes_scaling_method: fixed
+ddes_n_prior_samples: 16
 
-  # For holdout split
-  holdout:
-    train_ratio: 0.7
-    val_ratio: 0.15
-    test_ratio: 0.15
+# --- PGA-MAP-Elites ---
+pga_max_evals: 20000
+pga_n_niches: 512
+pga_random_init: 500
+pga_eval_batch_size: 100
+pga_proportion_evo: 0.5
+pga_nr_of_steps_crit: 300
+pga_nr_of_steps_act: 10
+pga_iso_sigma: 0.01
+pga_line_sigma: 0.2
 
-  # For walk-forward and expanding window
-  temporal:
-    # Initial training period (years)
-    initial_train_years: 10
-
-    # Validation window size (years)
-    val_window_years: 1
-
-    # Step size for rolling/expanding (years)
-    step_years: 1
-
-    # Gap between train and val to prevent leakage (trading days)
-    purge_gap_days: 5
-
-    # Final test set - held out entirely (years from end)
-    final_test_years: 2
-
-  # Number of random seeds for statistical significance
-  n_seeds: 5
-  random_seeds: [42, 123, 456, 789, 1011]
-
-# -----------------------------------------------------------------------------
-# Environment Configuration
-# -----------------------------------------------------------------------------
-environment:
-  # Episode length (trading days)
-  episode_length: 252 # ~1 trading year
-
-  # Reward type: "log_return", "sharpe", "differential_sharpe"
-  reward_type: "log_return"
-
-  # Risk-free rate (annualized) for Sharpe calculation
-  risk_free_rate: 0.02
-
-# -----------------------------------------------------------------------------
-# DDPG Configuration
-# Source: Lillicrap et al. 2015 "Continuous control with deep RL"
-# Adapted from: Zhang et al. 2021 "DDPG-based Strategy for Portfolio Management"
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# DDPG Configuration
-# Adapted for your implementation (epoch-based, not timestep-based)
-# -----------------------------------------------------------------------------
-ddpg:
-  # Network architecture
-  actor_hidden_dims: [64, 64]
-
-  # Learning rates
-  actor_lr: 0.0001
-  critic_lr: 0.001
-
-  # Training
-  batch_size: 1
-  num_epochs: 100
-
-  # Target network
-  soft_update: true
-  tau: 0.005
-  gamma: 0.99
-
-  # Regularization
-  l1_lambda: 0
-  l2_lambda: 0
-  weight_decay: 0
-
-  # Exploration noise
-  noise: 0.2
-
-  # Early stopping
-  early_stopping: true
-  patience: 5
-  min_delta: 0
-
-# -----------------------------------------------------------------------------
-# Div-DDPG Configuration
-# -----------------------------------------------------------------------------
-div_ddpg:
-  # Network architecture
-  actor_hidden_dims: [64, 64]
-
-  # Learning rates
-  actor_lr: 0.0001
-  critic_lr: 0.001
-
-  # Training
-  batch_size: 1
-  num_epochs: 100
-
-  # Target network
-  soft_update: true
-  tau: 0.005
-  gamma: 0.99
-
-  # Regularization
-  l1_lambda: 0
-  l2_lambda: 0
-  weight_decay: 0
-
-  # Exploration noise - paper suggests not needed with diversity term
-  noise: 0.0
-
-  # Early stopping
-  early_stopping: true
-  patience: 5
-  min_delta: 0
-
-  # Diversity-specific parameters (Hong et al. 2018)
-  diversity:
-    # Scaling method: "fixed", "linear_decay", "distance_based"
-    scaling_method: "distance_based"
-
-    # Alpha value (scaling factor for diversity term)
-    alpha: 1.0
-
-    # For linear decay
-    alpha_final: 0.0
-
-    # Number of prior actions to sample for distance calculation
-    n_prior_samples: 16
-
-# -----------------------------------------------------------------------------
-# PGA-MAP-Elites Configuration
-# Source: Nilsson & Cully 2021 "Policy Gradient Assisted MAP-Elites"
-# -----------------------------------------------------------------------------
-pga_map_elites:
-  # Archive configuration
-  archive:
-    # Type: "grid" or "cvt"
-    type: "cvt"
-
-    # For CVT archive - number of niches (centroids)
-    n_niches: 1024
-
-    # For grid archive - cells per dimension
-    grid_dims: [50, 50] # for 2D behavior space
-
-  # Behavior descriptor configuration
-  behavior_descriptors:
-    # Descriptors to use: volatility, diversification, turnover, etc.
-    descriptors: ["volatility", "diversification"]
-
-    # Bounds for normalization [min, max] for each descriptor
-    bounds:
-      volatility: [0.0, 0.5] # annualized volatility
-      diversification: [0.0, 1.0] # 0 = concentrated, 1 = equal weight
-      turnover: [0.0, 2.0] # daily turnover ratio
-
-  # Actor-Critic networks (TD3-based)
-  actor_hidden_dims: [256, 256]
-  critic_hidden_dims: [256, 256]
-
-  # Learning rates
-  actor_lr: 0.0003 # 3e-4, from TD3
-  critic_lr: 0.0003
-
-  # Replay buffer (shared across all policies)
-  buffer_size: 1000000
-  batch_size: 256
-
-  # TD3 specific
-  tau: 0.005
-  gamma: 0.99
-  policy_noise: 0.2 # noise added to target policy
-  noise_clip: 0.5
-  policy_delay: 2 # delayed policy updates
-
-  # Variation operators
-  variation:
-    # Probability of using PG vs GA operator
-    pg_probability: 0.5
-
-    # GA operator: iso+line from original MAP-Elites
-    iso_sigma: 0.01 # isotropic gaussian noise
-    line_sigma: 0.2 # line variation coefficient
-
-  # Evolution parameters
-  batch_size_eval: 32 # policies evaluated per iteration
-  n_iterations: 1000
-
-  # Initial population
-  initial_population: 100
-
-  # Critic training
-  critic_training_steps: 300 # gradient steps per iteration
-
-# -----------------------------------------------------------------------------
-# Equal Weights Baseline
-# No hyperparameters needed - just 1/N allocation
-# -----------------------------------------------------------------------------
-equal_weights:
-  rebalance_frequency: "daily" # "daily", "weekly", "monthly", "never"
-
-# -----------------------------------------------------------------------------
-# Evaluation Metrics
-# -----------------------------------------------------------------------------
-evaluation:
-  metrics:
-    - cumulative_return
-    - annualized_return
-    - annualized_volatility
-    - sharpe_ratio
-    - sortino_ratio
-    - calmar_ratio
-    - max_drawdown
-    - avg_turnover
-    - transaction_costs_total
-
-  # For QD methods - additional metrics
-  qd_metrics:
-    - coverage # fraction of niches filled
-    - qd_score # sum of fitness across archive
-    - max_fitness
-    - mean_fitness
-
-# -----------------------------------------------------------------------------
-# Logging and Checkpointing
-# -----------------------------------------------------------------------------
-logging:
-  # Logging frequency (steps)
-  log_freq: 1000
-
-  # Evaluation frequency (steps)
-  eval_freq: 10000
-
-  # Checkpoint frequency (steps)
-  checkpoint_freq: 50000
-
-  # Output directory
-  output_dir: "experiments"
-
-  # Use wandb for tracking
-  use_wandb: false
-  wandb_project: "portfolio-qd"
-
-# -----------------------------------------------------------------------------
-# Compute Resources
-# -----------------------------------------------------------------------------
-compute:
-  device: "auto" # "auto", "cuda", "cpu"
-  n_workers: 4 # parallel workers for evaluation
-  seed: 42
+# --- Experiment ---
+seeds: [42, 123, 456]
