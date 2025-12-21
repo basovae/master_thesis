@@ -399,9 +399,10 @@ class DDPGTrainer:
 
                 # Critic loss and backpropagation
                 q_value = self.critic(
-                    torch.cat((state.flatten(start_dim=1),
-                               noisy_portfolio_allocation.flatten(start_dim=1)))
+                    torch.cat((state.flatten(start_dim=1), 
+                    noisy_portfolio_allocation.flatten(start_dim=1)), dim=1)
                 )
+
                 critic_loss = (target_q_value - q_value).pow(2)
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward(retain_graph=True)
@@ -436,8 +437,9 @@ class DDPGTrainer:
                     for state, next_state in val_loader:
                         portfolio_allocation = self.actor(state.flatten(start_dim=1))
                         q_value = self.critic(
-                            torch.cat((state.flatten(start_dim=1), portfolio_allocation.flatten(start_dim=1)))
-                        )
+                            torch.cat((state.flatten(start_dim=1), 
+                            noisy_portfolio_allocation.flatten(start_dim=1)), dim=1))
+                        
 
                         if self.soft_update:
                             next_portfolio_allocation = self.target_actor(next_state.flatten(start_dim=1))
@@ -450,15 +452,21 @@ class DDPGTrainer:
                                 torch.cat((next_state.flatten(start_dim=1), next_portfolio_allocation.flatten(start_dim=1)))
                             )
 
-                        avg_profit = torch.mean(
-                            torch.sum(state.view(-1, self.number_of_assets) * portfolio_allocation,
-                                    dim=-1)
-                        ).detach().cpu()
-                        volatility = torch.std(
-                            torch.sum(state.view(-1, self.number_of_assets) * portfolio_allocation,
-                                    dim=-1),
-                            correction=0, # maximum likelihood estimation
-                        ).detach().cpu()
+                        #avg_profit = torch.mean(
+                        #    torch.sum(state.view(-1, self.number_of_assets) * portfolio_allocation,
+                        #            dim=-1)
+                        #).detach().cpu()
+                        #volatility = torch.std(
+                        #    torch.sum(state.view(-1, self.number_of_assets) * portfolio_allocation,
+                        #            dim=-1),
+                        #    correction=0, # maximum likelihood estimation
+                        #).detach().cpu()
+                        state_3d = state.view(state.size(0), -1, self.number_of_assets)
+                        alloc_expanded = portfolio_allocation.unsqueeze(1)
+                        daily_returns = torch.sum(state_3d * alloc_expanded, dim=-1)
+                        avg_profit = torch.mean(daily_returns).detach().cpu()
+                        volatility = torch.std(daily_returns, correction=0).detach().cpu()
+                        
                         reward = avg_profit + self.risk_preference * volatility
 
                         target_q_value = reward + self.gamma * next_q_value
