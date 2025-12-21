@@ -1,6 +1,5 @@
 # =============================================================================
-# Default Configuration
-# Edit these values OR override from notebook
+# config.yaml - Unified config for DDPG and PGA-MAP-Elites
 # =============================================================================
 
 # --- Data ---
@@ -8,39 +7,56 @@ lookback_window: 20
 train_ratio: 0.7
 val_ratio: 0.15
 
-# --- Training ---
-batch_size: 1
-num_epochs: 100
-early_stopping: true
-patience: 10
-hidden_sizes: [64, 64]
+# --- Shared Architecture ---
+hidden_sizes: [128, 128] # DDPG + PGA actor/critic
 
-# --- Optimizer ---
-actor_lr: 0.0001
-critic_lr: 0.001
+# --- Shared RL ---
 gamma: 0.99
 tau: 0.005
-soft_update: true
-
-# --- DDPG Exploration ---
-noise: 0.2
-
-# --- DDES (toggle with use_ddes) ---
-use_ddes: false
-ddes_alpha: 1.0
-ddes_scaling_method: fixed
-ddes_n_prior_samples: 16
-
-# --- PGA-MAP-Elites ---
-pga_max_evals: 5000 #default 20000
-pga_n_niches: 128 #default 512
-pga_random_init: 200 #default 500
-pga_eval_batch_size: 100
-pga_proportion_evo: 0.5
-pga_nr_of_steps_crit: 100 #default 300
-pga_nr_of_steps_act: 10
-pga_iso_sigma: 0.01
-pga_line_sigma: 0.2
+actor_lr: 0.001
+critic_lr: 0.0003 # 3e-4
 
 # --- Experiment ---
 seeds: [42, 123, 456]
+
+# =============================================================================
+# DDPG-specific
+# =============================================================================
+ddpg:
+  batch_size: 1
+  num_epochs: 100
+  patience: 10
+  noise: 0.2
+
+  # DDES (toggle with use_ddes)
+  use_ddes: false
+  ddes_alpha: 1.0
+  ddes_scaling_method: fixed
+  ddes_n_prior_samples: 16
+
+# =============================================================================
+# PGA-MAP-Elites-specific
+# =============================================================================
+pga:
+  # QD parameters
+  n_niches: 256
+  max_evals: 20000
+  random_init: 500
+  batch_size: 100 # actors per iteration
+
+  # Behavior descriptor bounds [volatility, diversification]
+  bd_min: [0.0, 0.0]
+  bd_max: [0.3, 1.0]
+
+  # Variation operators
+  proportion_evo: 0.5 # 50% GA, 50% PG
+  iso_sigma: 0.005 # GA: isotropic noise
+  line_sigma: 0.05 # GA: directional noise
+  nr_of_steps_act: 10 # PG: gradient steps
+
+  # Critic training (TD3)
+  nr_of_steps_crit: 300
+  train_batch_size: 256
+  policy_noise: 0.2
+  noise_clip: 0.5
+  policy_freq: 2
