@@ -178,3 +178,149 @@ def eval_policy(actor, env):
                      info.get('diversification', 0.0)])
     
     return total_reward, desc, transitions
+
+"""
+Policy Evaluation for PGA-MAP-Elites
+
+Aligned with original implementation from:
+https://github.com/ollenilsson19/PGA-MAP-Elites/blob/master/vectorized_env.py
+
+Every design choice traced via [QDGYM] or [FINRL] tags.
+"""
+
+import numpy as np
+import torch
+
+
+def eval_policy(actor, env):
+    """
+    [QDGYM] Evaluate policy in environment.
+    
+    Follows original PGA-MAP-Elites evaluation pattern from vectorized_env.py.
+    Uses env.tot_reward and env.desc instead of computing manually.
+    
+    Args:
+        actor: Policy network with select_action(state) method [QDGYM]
+        env: PortfolioEnv with QDgym interface [QDGYM + FINRL]
+        
+    Returns:
+        tuple: (fitness, behavior_descriptor, transitions)
+            - fitness: float, env.tot_reward [QDGYM]
+            - behavior_descriptor: np.array shape (2,), env.desc [QDGYM]
+            - transitions: list of (s, a, s', r, done_bool) [QDGYM]
+    """
+    # [QDGYM] Reset environment - returns state only
+    state = env.reset()
+    
+    transitions = []
+    done = False
+    
+    # [QDGYM] Main evaluation loop
+    while not done:
+        # [QDGYM] Get action from policy (no gradient needed)
+        with torch.no_grad():
+            action = actor.select_action(state)
+        
+        # [QDGYM] Step environment
+        next_state, reward, done, info = env.step(action)
+        
+        # -----------------------------------------------------------------
+        # [QDGYM] Critical: done_bool calculation from vectorized_env.py
+        # 
+        # From original code:
+        #   done_bool = float(done) if env.T < env._max_episode_steps else 0
+        #
+        # This is for TD3 bootstrapping:
+        # - If episode ended naturally (T < max): done_bool = 1.0 (no bootstrap)
+        # - If episode truncated (T >= max): done_bool = 0.0 (bootstrap)
+        # -----------------------------------------------------------------
+        if env.T < env._max_episode_steps:
+            done_bool = float(done)
+        else:
+            done_bool = 0.0  # [QDGYM] Truncation, not termination
+        
+        # [QDGYM] Store transition for replay buffer
+        transitions.append((
+            state.copy(),
+            action.copy(),
+            next_state.copy(),
+            reward,
+            done_bool
+        ))
+        
+        state = next_state
+    
+    # -----------------------------------------------------------------
+    # [QDGYM] Return values from env attributes, not manual computation
+    # This ensures consistency with QDgym evaluation pattern
+    # -----------------------------------------------------------------
+    fitness = env.tot_reward      # [QDGYM] Cumulative reward
+    descriptor = env.desc.copy()  # [QDGYM] Behavior descriptor
+    
+    return fitness, descriptor, transitions
+
+
+def format_transitions_for_buffer(transitions_list):
+    """
+    [QDGYM] Format transitions for ReplayBuffer.add()
+    
+    Original PGA-MAP-Elites ReplayBuffer expects:
+        transitions = (states, actions, next_states, rewards, not_dones)
+    Each is a numpy array where first dim is batch.
+    
+    Args:
+        transitions_list: List of (s, a, s', r, done_bool) tuples
+        
+    Returns:
+        tuple of arrays: (states, actions, next_states, rewards, not_dones)
+    """
+    if not transitions_list:
+        return None
+    
+    states = np.array([t[0] for t in transitions_list])
+    actions = np.array([t[1] for t in transitions_list])
+    next_states = np.array([t[2] for t in transitions_list])
+    rewards = np.array([t[3] for t in transitions_list]).reshape(-1, 1)
+    # [QDGYM] not_done = 1 - done_bool
+    not_dones = 1.0 - np.array([t[4] for t in transitions_list]).reshape(-1, 1)
+    
+    return (states, actions, next_states, rewards, not_dones)
+
+
+if __name__ == "__main__":
+    import pandas as pd
+    import sys
+    sys.path.insert(0, '/home/claude')
+    from portfolio_env import PortfolioEnv
+    
+    # Mock actor for testing
+    class MockActor:
+        def __init__(self, action_dim):
+            self.action_dim = action_dim
+        
+        def select_action(self, state):
+            return np.random.randn(self.action_dim)
+    
+    # Create environment
+    np.random.seed(42)
+    returns = np.random.randn(100, 5) * 0.02
+    df = pd.DataFrame(returns)
+    env = PortfolioEnv(df, lookback=10, episode_len=20)
+    
+    # Create actor
+    actor = MockActor(env.action_dim)
+    
+    # Evaluate
+    fitness, desc, transitions = eval_policy(actor, env)
+    
+    print("=== eval_policy Test ===")
+    print(f"Fitness (env.tot_reward): {fitness:.6f}")
+    print(f"Descriptor (env.desc): {desc}")
+    print(f"Num transitions: {len(transitions)}")
+    print(f"Last 3 done_bool values: {[t[4] for t in transitions[-3:]]}")
+    
+    # Test buffer formatting
+    formatted = format_transitions_for_buffer(transitions)
+    print(f"\n=== Buffer Format ===")
+    print(f"States: {formatted[0].shape}, Actions: {formatted[1].shape}")
+    print(f"Not_dones (last 3): {formatted[4][-3:].flatten()}")
