@@ -1,6 +1,6 @@
-from .pga_map_elites import run
+#from .pga_map_elites import run
 from .portfolio_env import PortfolioEnv
 from .official_utils import ReplayBuffer
 from .official_networks import Critic, Actor
 
-__all__ = ['run', 'PortfolioEnv', 'Critic', 'Actor', 'ReplayBuffer']
+__all__ = ['PortfolioEnv', 'Critic', 'Actor', 'ReplayBuffer']

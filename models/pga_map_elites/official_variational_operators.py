@@ -25,7 +25,7 @@ from functools import partial
 import heapq
 from operator import itemgetter
 
-from vectorized_env import CloudpickleWrapper
+from .vectorized_env import CloudpickleWrapper
 
 
 def parallel_worker(process_id,

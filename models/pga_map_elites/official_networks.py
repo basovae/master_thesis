@@ -276,3 +276,6 @@ class Critic(object):
 		self.critic.load_state_dict(torch.load(filename + "_critic", map_location=torch.device('cpu')))
 		self.critic_optimizer.load_state_dict(torch.load(filename + "_critic_optimizer", map_location=torch.device('cpu')))
 		self.critic_target = copy.deepcopy(self.critic)
+
+	def Q1(self, state, action):
+		return self.critic.Q1(state, action)
