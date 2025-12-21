@@ -1,59 +1,67 @@
 # =============================================================================
 # pga_map_elites.py
 # =============================================================================
-# PGA-MAP-Elites (Nilsson & Cully, 2021)
-# Simplified for portfolio optimization
+# PGA-MAP-Elites (Nilsson & Cully, GECCO 2021)
+# https://github.com/ollenilsson19/PGA-MAP-Elites
 # =============================================================================
 
 import numpy as np
 import torch
-from copy import deepcopy
+from sklearn.neighbors import KDTree
+from functools import partial
 
-from .networks import Actor, Critic
-from .official_logic import ReplayBuffer, Individual, add_to_archive, cvt
-from .variational_operators import VariationalOperator
+from .official_networks import Actor, Critic
+from .official_utils import ReplayBuffer, Individual, add_to_archive, cvt
+from .official_variational_operators import VariationalOperator
 
 
-def run_pga(env, cfg):
+def run(env, cfg):
     """
     Run PGA-MAP-Elites.
     
     Args:
         env: Gym-style environment
-        cfg: Unified config dict (uses cfg['pga'] for PGA-specific params)
+        cfg: Config dict with all parameters
     
     Returns:
-        archive: Dict mapping niche_id → Individual
+        archive: Dict mapping niche -> Individual
     """
+    # Unpack config
     pga = cfg['pga']
-    seed = cfg['seeds'][0]
-    
-    # Dimensions from environment
     state_dim = env.state_dim
     action_dim = env.action_dim
+    max_action = 1.0
     
-    # Seed
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+    # Seeds
+    torch.manual_seed(cfg['seeds'][0])
+    np.random.seed(cfg['seeds'][0])
+    
+    print("="*60)
+    print(f"PGA-MAP-Elites: {pga['max_evals']} evals, {pga['n_niches']} niches")
+    print("="*60)
     
     # =========================================================================
-    # Initialize components
+    # Initialize
     # =========================================================================
     
-    # CVT centroids for behavior space
-    bd_bounds = (pga['bd_min'], pga['bd_max'])
-    centroids, kdt = cvt(pga['n_niches'], dim=2, samples=25000, bd_bounds=bd_bounds)
+    # Actor factory
+    actor_fn = partial(
+        Actor,
+        state_dim,
+        action_dim,
+        max_action,
+        cfg['hidden_sizes'],
+    )
     
-    # Empty archive
-    archive = {}
-    
-    # Critic (TD3-style)
+    # Critic (TD3)
     critic = Critic(
-        state_dim, action_dim, max_action=1.0,
+        state_dim,
+        action_dim,
+        max_action,
         discount=cfg['gamma'],
         tau=cfg['tau'],
-        policy_noise=pga['policy_noise'],
-        noise_clip=pga['noise_clip'],
+        policy_noise=pga['policy_noise'] * max_action,
+        noise_clip=pga['noise_clip'] * max_action,
         policy_freq=pga['policy_freq'],
     )
     
@@ -61,119 +69,112 @@ def run_pga(env, cfg):
     replay_buffer = ReplayBuffer(state_dim, action_dim)
     
     # Variation operator
-    def make_actor():
-        return Actor(state_dim, action_dim, max_action=1.0, 
-                     neurons_list=cfg['hidden_sizes'])
-    
     var_op = VariationalOperator(
-        actor_fn=make_actor,
+        actor_fn=actor_fn,
+        num_cpu=1,
+        gradient_op=True,
+        crossover_op="iso_dd",
+        mutation_op=None,
+        learning_rate=cfg['actor_lr'],
         iso_sigma=pga['iso_sigma'],
         line_sigma=pga['line_sigma'],
-        learning_rate=cfg['actor_lr'],
     )
+    
+    # CVT + KDTree
+    c = cvt(pga['n_niches'], dim=2, samples=25000)
+    kdt = KDTree(c, leaf_size=30, metric='euclidean')
+    
+    # Archive
+    archive = {}
+    n_evals = 0
     
     # =========================================================================
     # Main loop
     # =========================================================================
-    n_evals = 0
-    iteration = 0
-    
-    print(f"PGA-MAP-Elites: {pga['max_evals']} evals, {pga['n_niches']} niches")
     
     while n_evals < pga['max_evals']:
-        iteration += 1
+        to_evaluate = []
         
-        # ---------------------------------------------------------------------
-        # Generate offspring
-        # ---------------------------------------------------------------------
+        # Random init or Variation
         if n_evals < pga['random_init']:
-            # Random initialization
-            offspring = [make_actor() for _ in range(pga['batch_size'])]
-            for actor in offspring:
-                actor.type = "random"
+            for _ in range(pga['batch_size']):
+                to_evaluate.append(actor_fn())
         else:
-            # Variation (GA + PG)
-            states = replay_buffer.sample_state(pga['train_batch_size'], pga['nr_of_steps_act'])
-            offspring = var_op(
-                archive=archive,
-                batch_size=pga['batch_size'],
-                proportion_evo=pga['proportion_evo'],
+            # Train critic
+            if replay_buffer.size > pga['train_batch_size']:
+                critic.train(
+                    archive,
+                    replay_buffer,
+                    pga['nr_of_steps_crit'],
+                    batch_size=pga['train_batch_size']
+                )
+                states = replay_buffer.sample_state(
+                    pga['train_batch_size'],
+                    pga['nr_of_steps_act']
+                )
+            else:
+                states = None
+            
+            # Variation
+            to_evaluate = var_op(
+                archive,
+                pga['batch_size'],
+                pga['proportion_evo'],
                 critic=critic,
                 states=states,
-                nr_of_steps_act=pga['nr_of_steps_act'],
+                train_batch_size=pga['train_batch_size'],
+                nr_of_steps_act=pga['nr_of_steps_act']
             )
         
-        # ---------------------------------------------------------------------
-        # Evaluate and add to archive
-        # ---------------------------------------------------------------------
+        # Evaluate
         added = 0
-        for actor in offspring:
-            fitness, behavior, transitions = evaluate(actor, env)
+        for actor in to_evaluate:
+            fitness, desc, transitions = eval_policy(actor, env)
             
             # Store transitions
-            for t in transitions:
-                replay_buffer.add(*t)
+            if transitions:
+                s, a, ns, r, nd = zip(*transitions)
+                replay_buffer.add((
+                    np.array(s), np.array(a), np.array(ns),
+                    np.array(r).reshape(-1,1), np.array(nd).reshape(-1,1)
+                ))
             
-            # Normalize behavior to [0,1]
-            behavior_norm = normalize_bd(behavior, bd_bounds)
-            
-            # Try add to archive
-            ind = Individual(actor, behavior_norm, fitness)
-            if add_to_archive(ind, archive, kdt):
+            # Add to archive
+            ind = Individual(actor, desc, fitness)
+            if add_to_archive(ind, desc, archive, kdt):
                 added += 1
         
-        n_evals += len(offspring)
+        n_evals += len(to_evaluate)
         
-        # ---------------------------------------------------------------------
-        # Train critic
-        # ---------------------------------------------------------------------
-        if len(replay_buffer) > 1000:
-            critic.train(archive, replay_buffer, pga['nr_of_steps_crit'],
-                         batch_size=pga['train_batch_size'])
-        
-        # ---------------------------------------------------------------------
-        # Log progress
-        # ---------------------------------------------------------------------
-        if iteration % 10 == 0:
-            coverage = 100 * len(archive) / pga['n_niches']
-            best = max((ind.fitness for ind in archive.values()), default=0)
-            print(f"Iter {iteration:3d} | Evals {n_evals:5d} | "
-                  f"Archive {len(archive):3d} ({coverage:.1f}%) | "
-                  f"Best {best:.4f} | +{added}")
+        # Log
+        if n_evals % 500 == 0 or n_evals >= pga['max_evals']:
+            cov = 100 * len(archive) / pga['n_niches']
+            best = max((x.fitness for x in archive.values()), default=0)
+            print(f"[{n_evals:5d}] Archive: {len(archive):3d} ({cov:.0f}%) | "
+                  f"Best: {best:.4f} | +{added}")
     
     var_op.close()
     return archive
 
 
-# =============================================================================
-# Helpers
-# =============================================================================
-
-def evaluate(actor, env):
-    """Evaluate actor, return (fitness, behavior, transitions)."""
+def eval_policy(actor, env):
+    """Evaluate actor, return (fitness, behavior_desc, transitions)."""
     state = env.reset()
     transitions = []
     total_reward = 0
-    
     done = False
+    
     while not done:
         with torch.no_grad():
-            action = actor(torch.FloatTensor(state).unsqueeze(0)).cpu().numpy().flatten()
+            action = actor.select_action(state)
         
         next_state, reward, done, info = env.step(action)
-        transitions.append((state, action, next_state, reward, float(not done)))
+        transitions.append((state.copy(), action.copy(), next_state.copy(), 
+                           reward, 0.0 if done else 1.0))
         total_reward += reward
         state = next_state
     
-    behavior = np.array([
-        info.get('volatility', 0.0),
-        info.get('diversification', 0.0)
-    ])
+    desc = np.array([info.get('volatility', 0.0), 
+                     info.get('diversification', 0.0)])
     
-    return total_reward, behavior, transitions
-
-
-def normalize_bd(behavior, bd_bounds):
-    """Normalize behavior descriptor to [0,1]."""
-    bd_min, bd_max = bd_bounds
-    return np.clip((behavior - bd_min) / (np.array(bd_max) - bd_min + 1e-8), 0, 1)
+    return total_reward, desc, transitions
