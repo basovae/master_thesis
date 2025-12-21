@@ -105,7 +105,7 @@ class PortfolioEnv:
         return self.data[start:self._idx].flatten().astype(np.float32)
     
     def _update_desc(self, weights):
-        """Update behavior descriptor: [volatility, diversification]."""
+        """Update behavior descriptor: [volatility, diversification] normalized to [0,1]."""
         # Volatility = std of returns so far
         if len(self._returns) > 1:
             vol = np.std(self._returns)
@@ -113,7 +113,14 @@ class PortfolioEnv:
             vol = 0.0
         
         # Diversification = 1 - Herfindahl index
-        # Herfindahl = sum of squared weights (concentration measure)
         div = 1.0 - np.sum(weights ** 2)
         
-        self.desc = np.array([vol, div])
+        # Normalize to [0,1] range
+        # Volatility: daily vol typically 0.001 to 0.05
+        vol_normalized = np.clip(vol / 0.05, 0.0, 1.0)
+        
+        # Diversification already in [0,1], but max possible is 1-1/n_assets
+        max_div = 1.0 - 1.0/self.n_assets  # ≈ 0.976 for 42 assets
+        div_normalized = np.clip(div / max_div, 0.0, 1.0)
+        
+        self.desc = np.array([vol_normalized, div_normalized])

@@ -317,41 +317,42 @@ class DDPGTrainer:
         portfolio_returns = torch.sum(state_3d * alloc_expanded, dim=-1)
         return portfolio_returns
 
+    
+
     # =========================================================================
     # DDES-specific methods
     # =========================================================================
     
-    def _compute_diversity_loss(self, current_action, replay_buffer):
-        """Compute diversity loss as mean MSE to prior actions.
+    def _compute_diversity_loss(self, current_state, current_action, replay_buffer):
+        """Compute diversity relative to actions from SIMILAR states.
         
-        From Hong et al. (2018): encourages current action to differ from
-        actions stored in replay buffer.
-        
-        Args:
-            current_action: Current policy output, shape (batch, n_assets)
-            replay_buffer: Replay buffer to sample prior actions from
-            
-        Returns:
-            Scalar tensor with diversity loss (negative mean distance)
+        Hong et al. (2018): diversity should be state-conditioned.
         """
-        if len(replay_buffer) < self.ddes_n_prior_samples:
+        if len(replay_buffer) < self.ddes_n_prior_samples * 2:
             return torch.tensor(0.0)
         
-        # Sample prior actions from buffer
-        prior_transitions = replay_buffer.sample(self.ddes_n_prior_samples)
-        prior_actions = torch.stack([t[1] for t in prior_transitions])
+        # Sample candidates (more than needed, then filter)
+        n_candidates = min(len(replay_buffer), self.ddes_n_prior_samples * 5)
+        candidates = replay_buffer.sample(n_candidates)
         
-        # Handle batch dimension
+        # Extract states and actions: buffer format is (state, action, reward, next_state)
+        candidate_states = torch.stack([t[0].flatten() for t in candidates])
+        candidate_actions = torch.stack([t[1] for t in candidates])
+        
+        # Find k-nearest states by L2 distance
+        current_flat = current_state.flatten()
+        distances = torch.norm(candidate_states - current_flat, dim=-1)
+        k = min(self.ddes_n_prior_samples, len(candidates))
+        _, nearest_idx = torch.topk(distances, k, largest=False)
+        
+        prior_actions = candidate_actions[nearest_idx]
+        
+        # Compute diversity (negative = we maximize distance)
         if current_action.dim() == 1:
             current_action = current_action.unsqueeze(0)
         
-        # MSE distance to each prior action
-        # current_action: (batch, n_assets), prior_actions: (n_samples, n_assets)
-        # Compute distance from each batch element to all prior actions
-        distances = torch.mean((current_action.unsqueeze(1) - prior_actions.unsqueeze(0)) ** 2, dim=-1)
-        
-        # Return negative mean distance (we want to maximize distance)
-        return -torch.mean(distances)
+        action_dist = torch.mean((current_action - prior_actions) ** 2, dim=-1)
+        return -torch.mean(action_dist)
 
     def _update_ddes_alpha(self, epoch, total_epochs, current_diversity):
         """Update alpha based on scaling method.
@@ -428,8 +429,9 @@ class DDPGTrainer:
 
                 # === EXPLORATION: DDES vs Gaussian noise ===
                 if self.use_ddes:
-                    # DDES: No exploration noise - diversity term handles exploration
-                    action_for_buffer = portfolio_allocation
+                    # DDES: only some exploration noise - diversity term handles exploration
+                    exploration_noise = torch.normal(0, noise * 0.5, portfolio_allocation.shape)
+                    action_for_buffer = portfolio_allocation + exploration_noise
                 else:
                     # Standard DDPG: Add Gaussian noise for exploration
                     exploration_noise = torch.normal(0, noise, portfolio_allocation.shape)
@@ -495,7 +497,7 @@ class DDPGTrainer:
                 # === DDES: Add diversity term to actor loss ===
                 if self.use_ddes:
                     diversity_loss = self._compute_diversity_loss(
-                        sampled_portfolio_allocation, replay_buffer
+                        sampled_state, sampled_portfolio_allocation, replay_buffer
                     )
                     actor_loss = actor_q_loss + self.ddes_alpha * diversity_loss
                     total_diversity_loss += diversity_loss.item()

@@ -14,8 +14,8 @@ seeds: [42, 123, 456]
 # =============================================================================
 ddpg:
   batch_size: 64
-  num_epochs: 100
-  patience: 10
+  num_epochs: 150
+  patience: 20
   noise: 0.2
   use_ddes: false
   ddes_alpha: 1.0
