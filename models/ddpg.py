@@ -322,7 +322,7 @@ class DDPGTrainer:
                 noisy_portfolio_allocation = portfolio_allocation + exploration_noise
 
                 # Set target value = average profit + risk preference * volatility
-                #avg_profit = torch.mean(
+                # avg_profit = torch.mean(
                 #    torch.sum(state.view(-1, self.number_of_assets) * noisy_portfolio_allocation,
                 #              dim=-1)
                 #).detach().cpu()
