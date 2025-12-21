@@ -35,14 +35,14 @@ def sharpe_ratio(
     risk-adjusted return metric, such as the Sharpe ratio."
     
     Args:
-        portfolio_returns: Daily portfolio returns
+        portfolio_returns: Daily portfolio returns, shape (batch, lookback) or (lookback,)
         risk_free_rate: Risk-free rate (default 0)
         
     Returns:
-        Sharpe ratio
+        Sharpe ratio per sample
     """
-    avg_return = torch.mean(portfolio_returns)
-    volatility = torch.std(portfolio_returns, correction=0)
+    avg_return = torch.mean(portfolio_returns, dim=-1)
+    volatility = torch.std(portfolio_returns, dim=-1, correction=0)
     
     return (avg_return - risk_free_rate) / (volatility + 1e-8)
 

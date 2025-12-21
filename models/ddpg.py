@@ -7,7 +7,6 @@ from typing import Type
 
 from copy import deepcopy
 
-from utilities import predictors
 from utilities.data_processing import RLDataLoader
 from utilities.metrics import RLEvaluator
 from utilities.training import EarlyStopper, ReplayBuffer
@@ -318,29 +317,51 @@ class DDPGTrainer:
             for state, next_state in train_loader:
 
                 # Compute current portfolio allocation and Q-value
-                portfolio_allocation = self.actor(state.view(state.size(0), -1))
+                portfolio_allocation = self.actor(state.flatten(start_dim=1))
                 exploration_noise = torch.normal(0, noise, portfolio_allocation.shape)
                 noisy_portfolio_allocation = portfolio_allocation + exploration_noise
 
                 # Set target value = average profit + risk preference * volatility
-                avg_profit = torch.mean(
-                    torch.sum(state.view(-1, self.number_of_assets) * noisy_portfolio_allocation,
-                              dim=-1)
-                ).detach().cpu()
-                volatility = torch.std(
-                    torch.sum(state.view(-1, self.number_of_assets) * noisy_portfolio_allocation,
-                              dim=-1),
-                    correction=0, # maximum likelihood estimation
-                ).detach().cpu()
+                #avg_profit = torch.mean(
+                #    torch.sum(state.view(-1, self.number_of_assets) * noisy_portfolio_allocation,
+                #              dim=-1)
+                #).detach().cpu()
+                #volatility = torch.std(
+                #    torch.sum(state.view(-1, self.number_of_assets) * noisy_portfolio_allocation,
+                #              dim=-1),
+                #    correction=0, # maximum likelihood estimation
+                #).detach().cpu()
                 #reward = avg_profit + self.risk_preference * volatility
 
-                portfolio_returns = torch.sum(
-                    state.view(-1, self.number_of_assets) * noisy_portfolio_allocation,
-                    dim=-1
-                    )
+                #portfolio_returns = torch.sum(
+                #   state.view(-1, self.number_of_assets) * noisy_portfolio_allocation,
+                #    dim=-1
+                #    )
+                # reward = compute_reward(portfolio_returns, "sharpe")
 
+                state_3d = state.view(state.size(0), -1, self.number_of_assets)
 
-                reward = compute_reward(portfolio_returns, "sharpe")
+                # Expand allocation to (batch, 1, assets) for broadcasting
+                alloc_expanded = noisy_portfolio_allocation.unsqueeze(1)
+
+                # Daily returns per sample: (batch, lookback)
+                daily_returns = torch.sum(state_3d * alloc_expanded, dim=-1)
+
+                # Now compute stats - mean across both batch and time
+                avg_profit = torch.mean(daily_returns).detach().cpu()
+                volatility = torch.std(daily_returns, correction=0).detach().cpu()
+
+                # Reshape keeping batch dimension: (B, lookback, assets)
+                state_reshaped = state.view(state.size(0), -1, self.number_of_assets)
+
+                # Expand allocation to match: (B, 1, assets) -> broadcasts over lookback
+                alloc_expanded = noisy_portfolio_allocation.unsqueeze(1)
+
+                # Compute returns per day per sample: (B, lookback)
+                portfolio_returns = torch.sum(state_reshaped * alloc_expanded, dim=-1)
+
+                # Compute reward per sample in batch: (B,)
+                reward = compute_reward(portfolio_returns, "sharpe")  # needs to handle batch dim too
 
                 # Store transition in replay buffer
                 replay_buffer.push((
@@ -356,21 +377,21 @@ class DDPGTrainer:
                 reward = transition[0][2]
                 next_state = transition[0][3]
 
-                portfolio_allocation = self.actor(state.view(state.size(0), -1))
+                portfolio_allocation = self.actor(state.flatten(start_dim=1))
 
                 # Use target networks for next state action and Q-value if soft
                 # updates are enabled, else use regular ones
                 if self.soft_update:
-                    next_portfolio_allocation = self.target_actor(next_state.view(state.size(0), -1))
+                    next_portfolio_allocation = self.target_actor(next_state.flatten(start_dim=1))
                     next_q_value = self.target_critic(
-                        torch.cat((next_state.view(state.size(0), -1),
-                                next_portfolio_allocation.view(state.size(0), -1)))
+                        torch.cat((next_state.flatten(start_dim=1),
+                                next_portfolio_allocation.flatten(start_dim=1)))
                     )
                 else:
-                    next_portfolio_allocation = self.actor(next_state.view(state.size(0), -1))
+                    next_portfolio_allocation = self.actor(next_state.flatten(start_dim=1))
                     next_q_value = self.critic(
-                        torch.cat((next_state.view(state.size(0), -1),
-                                   next_portfolio_allocation.view(state.size(0), -1)))
+                        torch.cat((next_state.flatten(start_dim=1),
+                                   next_portfolio_allocation.flatten(start_dim=1)))
                     )
 
                 # Calculate target Q-value according to update function
@@ -378,8 +399,8 @@ class DDPGTrainer:
 
                 # Critic loss and backpropagation
                 q_value = self.critic(
-                    torch.cat((state.view(state.size(0), -1),
-                               noisy_portfolio_allocation.view(state.size(0), -1)))
+                    torch.cat((state.flatten(start_dim=1),
+                               noisy_portfolio_allocation.flatten(start_dim=1)))
                 )
                 critic_loss = (target_q_value - q_value).pow(2)
                 self.critic_optimizer.zero_grad()
@@ -388,7 +409,7 @@ class DDPGTrainer:
 
                 # Actor evaluation
                 critic_input = torch.cat(
-                    (state.view(state.size(0), -1), portfolio_allocation.view(state.size(0), -1)))
+                    (state.flatten(start_dim=1), portfolio_allocation.flatten(start_dim=1)))
                 actor_loss = -self.critic(critic_input)
 
                 # Add L1/L2 regularization to actor loss
@@ -413,20 +434,20 @@ class DDPGTrainer:
                 with torch.no_grad():
                     val_critic_loss = 0
                     for state, next_state in val_loader:
-                        portfolio_allocation = self.actor(state.view(state.size(0), -1))
+                        portfolio_allocation = self.actor(state.flatten(start_dim=1))
                         q_value = self.critic(
-                            torch.cat((state.view(state.size(0), -1), portfolio_allocation.view(state.size(0), -1)))
+                            torch.cat((state.flatten(start_dim=1), portfolio_allocation.flatten(start_dim=1)))
                         )
 
                         if self.soft_update:
-                            next_portfolio_allocation = self.target_actor(next_state.view(state.size(0), -1))
+                            next_portfolio_allocation = self.target_actor(next_state.flatten(start_dim=1))
                             next_q_value = self.target_critic(
-                                torch.cat((next_state.view(state.size(0), -1), next_portfolio_allocation.view(state.size(0), -1)))
+                                torch.cat((next_state.flatten(start_dim=1), next_portfolio_allocation.flatten(start_dim=1)))
                             )
                         else:
-                            next_portfolio_allocation = self.actor(next_state.view(state.size(0), -1))
+                            next_portfolio_allocation = self.actor(next_state.flatten(start_dim=1))
                             next_q_value = self.critic(
-                                torch.cat((next_state.view(state.size(0), -1), next_portfolio_allocation.view(state.size(0), -1)))
+                                torch.cat((next_state.flatten(start_dim=1), next_portfolio_allocation.flatten(start_dim=1)))
                             )
 
                         avg_profit = torch.mean(
