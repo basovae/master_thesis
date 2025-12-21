@@ -33,18 +33,12 @@ def reduce_negatives(weights, floor=-1.0):
     return weights / np.sum(np.abs(weights))
 
 
-def sharpe_ratio_series(returns: pd.Series, risk_free_rate: float = 0.0) -> float:
-    '''Calculate the Sharpe ratio for a series of returns.
-
-    Args:
-        returns (pd.Series): Series of portfolio returns.
-        risk_free_rate (float): Risk-free rate. Defaults to 0.
-
-    Returns:
-        float: The Sharpe ratio.
-    '''
+def sharpe_ratio_series(returns: pd.Series, risk_free_rate: float = 0.0, annualize: bool = True) -> float:
     excess_returns = returns - risk_free_rate
-    return excess_returns.mean() / (excess_returns.std() + 1e-8)
+    sharpe = excess_returns.mean() / (excess_returns.std() + 1e-8)
+    if annualize:
+        sharpe *= np.sqrt(252)
+    return sharpe
 
 
 def calculate_test_performance(data: np.array, weights: list = None) -> tuple:
