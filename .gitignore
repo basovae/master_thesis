@@ -1,1 +1,11 @@
 data.csv
+
+# Large model files
+*.dat
+
+# Results data
+results/
+models/pga_map_elites/results/
+
+# Temp files
+temp_train.csv
