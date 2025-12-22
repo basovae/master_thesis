@@ -438,7 +438,7 @@ class DDPGTrainer:
                     action_for_buffer = portfolio_allocation + exploration_noise
 
                 # Compute reward using Sharpe ratio
-                portfolio_returns = self._compute_portfolio_returns(state, action_for_buffer)
+                portfolio_returns = self._compute_portfolio_returns(next_state, action_for_buffer)
                 reward = compute_reward(portfolio_returns, "sharpe")
 
                 # Store transitions in replay buffer
@@ -552,7 +552,7 @@ class DDPGTrainer:
                             )
 
                         portfolio_returns = self._compute_portfolio_returns(
-                            state, portfolio_allocation
+                            next_state, portfolio_allocation
                         )
                         reward = compute_reward(portfolio_returns, "sharpe")
 

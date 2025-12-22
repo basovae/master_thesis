@@ -79,7 +79,8 @@ class Actor(nn.Module):
 			else:
 				a = F.relu(self.l1(state))
 				a = F.relu(self.l2(a))
-				return self.max_action * torch.tanh(self.l3(a))
+				#return self.max_action * torch.tanh(self.l3(a))
+				return self.l3(a)
 
 
 	def select_action(self, state):

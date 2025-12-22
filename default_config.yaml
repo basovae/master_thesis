@@ -1,41 +1,30 @@
-# =============================================================================
 # Shared
-# =============================================================================
 lookback_window: 20
-hidden_sizes: [128, 128]
+hidden_sizes: [256, 256] # Larger networks
 gamma: 0.99
 tau: 0.005
-actor_lr: 0.001
+actor_lr: 0.001 # Lower LR, more stable
 critic_lr: 0.0003
-seeds: [42, 123, 456]
+seeds: [42, 123, 456, 789, 1011] # 5 seeds for statistical significance
 
-# =============================================================================
 # DDPG
-# =============================================================================
 ddpg:
-  batch_size: 64
-  num_epochs: 150
-  patience: 20
+  batch_size: 1 # Keep 1 for sequential finance data
+  num_epochs: 300 # More epochs
+  patience: 50 # More patience
   noise: 0.2
-  use_ddes: false
   ddes_alpha: 1.0
 
-# =============================================================================
 # PGA-MAP-Elites
-# =============================================================================
 pga:
-  n_niches: 256
-  max_evals: 20000
-  random_init: 500
-  batch_size: 100
+  n_niches: 1024 # More coverage
+  max_evals: 100000 # 20x more than your test run
+  random_init: 1000 # More random exploration
+  batch_size: 100 # Keep same
   proportion_evo: 0.5
-  iso_sigma: 0.01
-  line_sigma: 0.2
-  nr_of_steps_crit: 300
+  iso_sigma: 0.005
+  line_sigma: 0.05
+  nr_of_steps_crit: 300 # From original paper
   nr_of_steps_act: 10
   train_batch_size: 256
-  policy_noise: 0.2
-  noise_clip: 0.5
-  policy_freq: 2
-  bd_min: [0.0, 0.0]
-  bd_max: [0.3, 1.0]
+  seeds: [42, 123, 456, 789, 1011]

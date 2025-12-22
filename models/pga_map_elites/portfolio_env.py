@@ -107,20 +107,11 @@ class PortfolioEnv:
     def _update_desc(self, weights):
         """Update behavior descriptor: [volatility, diversification] normalized to [0,1]."""
         # Volatility = std of returns so far
-        if len(self._returns) > 1:
-            vol = np.std(self._returns)
-        else:
-            vol = 0.0
-        
-        # Diversification = 1 - Herfindahl index
+        vol = np.std(self._returns) if len(self._returns) > 1 else 0.0
         div = 1.0 - np.sum(weights ** 2)
         
-        # Normalize to [0,1] range
-        # Volatility: daily vol typically 0.001 to 0.05
-        vol_normalized = np.clip(vol / 0.05, 0.0, 1.0)
+        # Normalize
+        vol_norm = np.clip(vol / 0.03, 0.0, 1.0)  # Changed from 0.05
+        div_norm = div / (1.0 - 1.0/self.n_assets)
         
-        # Diversification already in [0,1], but max possible is 1-1/n_assets
-        max_div = 1.0 - 1.0/self.n_assets  # ≈ 0.976 for 42 assets
-        div_normalized = np.clip(div / max_div, 0.0, 1.0)
-        
-        self.desc = np.array([vol_normalized, div_normalized])
+        self.desc = np.array([vol_norm, div_norm])
